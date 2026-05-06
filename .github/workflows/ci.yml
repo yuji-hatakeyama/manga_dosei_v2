@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Ruff lint
+        uses: astral-sh/ruff-action@v4
+        with:
+          args: "check ."
+      - name: Ruff format check
+        uses: astral-sh/ruff-action@v4
+        with:
+          args: "format --check --diff ."
