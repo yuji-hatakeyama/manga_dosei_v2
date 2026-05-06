@@ -1,0 +1,27 @@
+[project]
+name = "manga_dosei"
+version = "0.1.0"
+description = "ADK workflow for manga dosei daily content generation"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.21.0",
+    "beautifulsoup4>=4.14.3",
+    "google-adk>=1.22.0",
+    "google-genai>=1.0.0",
+    "greenlet>=3.3.0",
+    "pillow>=12.2.0",
+    "python-dotenv>=1.2.1",
+]
+
+[project.scripts]
+manga_dosei = "manga_dosei.run_daily:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["manga_dosei"]

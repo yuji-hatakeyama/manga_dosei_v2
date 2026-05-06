@@ -1,0 +1,7 @@
+.env
+.adk/*
+!.adk/.gitkeep
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
