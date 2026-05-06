@@ -36,7 +36,15 @@ Notes on the URIs:
 - `run_daily.py` uses `sqlite+aiosqlite:///./.adk/sessions.db` (async driver). `adk web` accepts the plain `sqlite://` SQLAlchemy URI; both point to the same SQLite file.
 - `--use_local_storage` is the default but resolves `.adk/` relative to `AGENTS_DIR`, which is **not necessarily the project root**. Passing the URIs explicitly (with `./` to anchor at CWD) is the only way to guarantee the web UI sees what the CLI wrote.
 
-There is no test suite, linter config, or formatter config in the repo at this time. Do not introduce one without being asked.
+Linting / formatting (ruff):
+
+```bash
+uv run ruff check .                  # lint
+uv run ruff check --fix .            # lint + auto-fix
+uv run ruff format .                 # format
+```
+
+Ruff config lives in `pyproject.toml` (`[tool.ruff]` / `[tool.ruff.lint]`). There is no test suite at this time; do not introduce one without being asked.
 
 ## Required environment
 
