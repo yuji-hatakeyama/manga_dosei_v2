@@ -7,14 +7,13 @@ Gemini 内蔵 grounding (`google_search` / `url_context`) は jiji.com の URL �
 """
 
 import os
-from typing import Optional
 from urllib.parse import quote
 
 from google.adk.tools.mcp_tool import McpToolset, StreamableHTTPConnectionParams
 
 
 def build_tavily_toolset(
-    tool_filter: Optional[list[str]] = None,
+    tool_filter: list[str] | None = None,
 ) -> McpToolset:
     """Tavily MCP に接続する toolset を返す。
 

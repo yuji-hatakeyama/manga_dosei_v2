@@ -1,4 +1,5 @@
-"""Wikipedia Commons API の薄いラッパー。collect_assets の LlmAgent から FunctionTool として呼ばれる。
+"""Wikipedia Commons API の薄いラッパー。
+collect_assets の LlmAgent から FunctionTool として呼ばれる。
 
 MCP server (wikipedia-mcp-image-crawler) の代替実装。Pure Python で
 User-Agent を本プロジェクト固有のものにし、Wikipedia の rate-limit ポリシーに
@@ -9,7 +10,6 @@ import os
 from typing import Any
 
 import httpx
-
 
 _API_ENDPOINT = "https://commons.wikimedia.org/w/api.php"
 _TIMEOUT_SECONDS = 30.0

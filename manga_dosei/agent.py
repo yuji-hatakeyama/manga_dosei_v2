@@ -13,7 +13,6 @@ from manga_dosei.tools import (
     resize_assets,
 )
 
-
 root_agent = Agent(
     name="manga_dosei",
     model=os.getenv("GEMINI_TEXT_MODEL", DEFAULT_TEXT_MODEL),

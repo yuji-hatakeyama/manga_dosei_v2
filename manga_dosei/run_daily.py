@@ -6,17 +6,15 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from google.genai import types
-
 from google.adk.artifacts import FileArtifactService
 from google.adk.events import Event, EventActions
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
+from google.genai import types
 
 from manga_dosei import APP_NAME, DEFAULT_USER_ID
 from manga_dosei.agent import root_agent
 from manga_dosei.validation import validate_target_date
-
 
 SESSION_URI = "sqlite+aiosqlite:///./.adk/sessions.db"
 ARTIFACT_DIR = Path(".adk/artifacts")
@@ -134,9 +132,7 @@ async def _run_step_with_retry(
                 file=sys.stderr,
             )
             traceback.print_exc(file=sys.stderr)
-            await _record_error(
-                session_service, target_date, tool_name, repr(error)
-            )
+            await _record_error(session_service, target_date, tool_name, repr(error))
         if not await _last_error(session_service, target_date):
             return True
         if attempt < attempts:
@@ -216,7 +212,8 @@ async def _record_error(
     step: str,
     message: str,
 ) -> None:
-    """ツール実行が例外で死んだ場合に、retry / 終了判定が機能するよう state に記録する。"""
+    """ツール実行が例外で死んだ場合に、retry / 終了判定が機能するよう
+    state に記録する。"""
     session = await session_service.get_session(
         app_name=APP_NAME,
         user_id=DEFAULT_USER_ID,

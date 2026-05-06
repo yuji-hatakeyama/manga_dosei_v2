@@ -16,7 +16,6 @@ from manga_dosei.tools._common import (
 from manga_dosei.tools._fetch_url import fetch_url
 from manga_dosei.tools._tavily import build_tavily_toolset
 
-
 _fetch_url_tool = FunctionTool(func=fetch_url)
 
 
@@ -42,7 +41,8 @@ def _build_prompt(target_date: str) -> str:
     date_jp = f"{year}年{month}月{day}日"
     md_jp = f"{month}月{day}日"
     return f"""
-{target_date} (YYYYMMDD形式 = {date_jp}、配信日ではなく対象日) の首相動静を jiji.com から取得してください。
+{target_date} (YYYYMMDD形式 = {date_jp}、配信日ではなく対象日)
+の首相動静を jiji.com から取得してください。
 
 取得手順:
 1. `tavily_search` で対象日の首相動静記事を検索する。クエリ例:
@@ -50,19 +50,28 @@ def _build_prompt(target_date: str) -> str:
    - 「首相動静（{md_jp}）」
    - 「{date_jp} 首相動静 時事通信」
    ヒットしないときはクエリを変えて複数回試すこと。
-2. 検索結果から jiji.com の記事 URL (例: `https://www.jiji.com/jc/article?...`) を 1 つ選び、`fetch_url` でその URL の本文を取得する。`fetch_url` の戻り値の `content` フィールドが本文 plain text。
-3. 取得した本文の中から「首相動静」記事部分をそのまま転記する。記事末尾には「2026年MM月DD日HH時MM分配信」のような **配信日時表記がそのまま含まれている** ので、それも見落とさず転記する。
-4. どうしても jiji.com 本サイトの記事本文に到達できなければ、body は空のまま、error に試したクエリと回数を書いて失敗報告すること。
+2. 検索結果から jiji.com の記事 URL
+   (例: `https://www.jiji.com/jc/article?...`) を 1 つ選び、
+   `fetch_url` でその URL の本文を取得する。
+   `fetch_url` の戻り値の `content` フィールドが本文 plain text。
+3. 取得した本文の中から「首相動静」記事部分をそのまま転記する。
+   記事末尾には「2026年MM月DD日HH時MM分配信」のような
+   **配信日時表記がそのまま含まれている** ので、それも見落とさず転記する。
+4. どうしても jiji.com 本サイトの記事本文に到達できなければ、body は空のまま、
+   error に試したクエリと回数を書いて失敗報告すること。
 
 【重要】絶対に守ること:
 - 取得した記事の内容を一切創作・加工・要約・省略しないこと
 - 記事の文章をそのまま正確に転記すること
 - 存在しない情報を追加しないこと
-- 検索結果の snippet だけから本文を再構成しないこと（必ず `fetch_url` で URL の本文を取得すること）
-- 配信日時の数字を勝手に省略・補完しないこと（content に出てくる文字列を一字一句そのまま）
+- 検索結果の snippet だけから本文を再構成しないこと
+  （必ず `fetch_url` で URL の本文を取得すること）
+- 配信日時の数字を勝手に省略・補完しないこと
+  （content に出てくる文字列を一字一句そのまま）
 
 応答フォーマット (output_schema):
-- 取得できた場合: body に記事本文（余分なヘッダーやフッター、説明文は含めない）+ 末尾に **content から見つけた配信日時** とページ URL。error は空文字。
+- 取得できた場合: body に記事本文（余分なヘッダーやフッター、説明文は含めない）
+  + 末尾に **content から見つけた配信日時** とページ URL。error は空文字。
 - 取得できなかった場合: body は空文字、error に理由を記載。
 
 body の出力例:

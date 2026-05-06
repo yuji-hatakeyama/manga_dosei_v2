@@ -9,7 +9,6 @@ from PIL import Image
 
 from manga_dosei.validation import validate_target_date
 
-
 _STEP = "resize_assets"
 _MAX_LONG_SIDE = 1024
 _RESAMPLING = Image.Resampling.LANCZOS

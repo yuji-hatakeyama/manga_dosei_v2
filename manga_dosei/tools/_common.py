@@ -1,7 +1,7 @@
 """Shared helpers for ADK workflow tools."""
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types
@@ -28,7 +28,7 @@ class StepOutput(BaseModel):
     error: str = ""
 
 
-def parse_target_date_input(callback_context: CallbackContext) -> Optional[str]:
+def parse_target_date_input(callback_context: CallbackContext) -> str | None:
     """AgentTool が user_content の text に JSON で詰めた引数から target_date を取り出す。
 
     input_schema=StepInput により形式は保証されているので、JSON parse と
@@ -90,7 +90,7 @@ async def save_text_artifact(
 async def load_text_artifact(
     callback_context: CallbackContext,
     filename: str,
-) -> Optional[str]:
+) -> str | None:
     artifact = await callback_context.load_artifact(filename)
     if artifact is None or artifact.text is None:
         return None
@@ -106,7 +106,7 @@ def record_last_error(
     callback_context: CallbackContext,
     step: str,
     message: str,
-    extra: Optional[dict[str, Any]] = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     payload: dict[str, Any] = {"step": step, "message": message}
     if extra:
@@ -119,11 +119,12 @@ async def prepare_step(
     *,
     step: str,
     required_artifacts: tuple[str, ...] = (),
-    load_prior: Optional[dict[str, str]] = None,
-) -> Optional[types.Content]:
+    load_prior: dict[str, str] | None = None,
+) -> types.Content | None:
     """各 step の before_agent_callback 共通実装。
 
-    target_date の検証 → 前段 artifact の存在確認 → 必要に応じて本文を temp state にロード。
+    target_date の検証 → 前段 artifact の存在確認 →
+    必要に応じて本文を temp state にロード。
     エラー時は適切な error/missing Content を返し、何も問題なければ None を返す。
 
     引数:

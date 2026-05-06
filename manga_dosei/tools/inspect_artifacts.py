@@ -7,7 +7,9 @@ from google.adk.tools import ToolContext
 from manga_dosei.validation import validate_target_date
 
 
-async def inspect_artifacts(target_date: str, tool_context: ToolContext) -> dict[str, Any]:
+async def inspect_artifacts(
+    target_date: str, tool_context: ToolContext
+) -> dict[str, Any]:
     """現在のセッションの artifacts と state を一覧する。
 
     前提:

@@ -13,7 +13,6 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-
 # jiji.com など報道サイトは bot 判定で 403 を返すことがあるため、
 # 一般的なブラウザ UA を前段に置きつつ、末尾に project 識別子と連絡先 (GitHub URL) を
 # 付けて自己申告する。連絡先を付けるのは responsible scraping のための慣行。
@@ -60,8 +59,7 @@ async def fetch_url(url: str) -> dict[str, Any]:
             headers={
                 "User-Agent": _USER_AGENT,
                 "Accept": (
-                    "text/html,application/xhtml+xml,"
-                    "application/xml;q=0.9,*/*;q=0.8"
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
                 ),
                 "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
             },

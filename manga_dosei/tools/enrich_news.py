@@ -1,12 +1,15 @@
 """enrich_news: dosei.md に関連ニュースを付加して news.md を保存する。
 
-deep research パターン: SequentialAgent(researcher → LoopAgent(evaluator → escalation_checker → enhanced_searcher) → composer)
+deep research パターン:
+SequentialAgent(researcher
+    → LoopAgent(evaluator → escalation_checker → enhanced_searcher)
+    → composer)
 で、Tavily を使って多角的に深掘り調査してから最終 markdown を組み立てる。
 adk-samples/python/agents/deep-search の構造を踏襲。
 """
 
 from collections.abc import AsyncGenerator
-from typing import Literal, Optional
+from typing import Literal
 
 from google.adk.agents import BaseAgent, LlmAgent, LoopAgent, SequentialAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -26,7 +29,6 @@ from manga_dosei.tools._common import (
 )
 from manga_dosei.tools._fetch_url import fetch_url
 from manga_dosei.tools._tavily import build_tavily_toolset
-
 
 _fetch_url_tool = FunctionTool(func=fetch_url)
 
@@ -61,14 +63,13 @@ class SummarizeUrlOutput(BaseModel):
     publish_date: str = Field(
         default="", description="配信日 (取得できれば 'YYYY年MM月DD日' 形式)"
     )
-    error: str = Field(
-        default="", description="失敗時の理由。成功時は空文字。"
-    )
+    error: str = Field(default="", description="失敗時の理由。成功時は空文字。")
 
 
 def _summarize_url_instruction(context: ReadonlyContext) -> str:
     return """\
-あなたは URL 要約エージェントです。引数 (`url`, `focus`) に従い、URL 本文から focus 観点に絞ったコンパクトな markdown 要約を返します。
+あなたは URL 要約エージェントです。引数 (`url`, `focus`) に従い、
+URL 本文から focus 観点に絞ったコンパクトな markdown 要約を返します。
 
 # 手順
 
@@ -78,12 +79,14 @@ def _summarize_url_instruction(context: ReadonlyContext) -> str:
 
 # CRITICAL RULES
 
-- `fetch_url` の戻り値が `status="error"` または `content` が空の場合は `error` に理由を書き、`summary` は空文字
+- `fetch_url` の戻り値が `status="error"` または `content` が空の場合は
+  `error` に理由を書き、`summary` は空文字
 - `focus` に関係ない情報は省略 (記事の冒頭定型文・関連リンク・広告等)
 - 創作禁止。本文に書かれていない情報は追加しない
 - `source_title` は本文冒頭やページタイトルから判断
 - `publish_date` は本文中の配信日表記を判別して `YYYY年MM月DD日` 形式で返す。
-  本文中の典型例: 「2026年04月28日22時03分配信」「2026/04/28 21:38」「4/28(火) 7:00配信」など。
+  本文中の典型例:
+  「2026年04月28日22時03分配信」「2026/04/28 21:38」「4/28(火) 7:00配信」など。
   判別不能なら空文字。
 
 # 応答 (output_schema=SummarizeUrlOutput)
@@ -137,7 +140,8 @@ _MAX_REFINEMENT_ITERATIONS = 2
 
 
 _DESCRIPTION = """\
-dosei.md に jiji.com 等の関連ニュースと人物背景を付加して news.md を artifact として保存するツール。
+dosei.md に jiji.com 等の関連ニュースと人物背景を付加して
+news.md を artifact として保存するツール。
 
 前提: dosei.md が存在すること。
 引数: target_date は YYYYMMDD 形式の対象日。
@@ -161,12 +165,16 @@ class Feedback(BaseModel):
     """
 
     grade: Literal["pass", "fail"] = Field(
-        description="調査の十分性。pass なら追加調査不要、fail なら follow_up_queries を埋める。"
+        description=(
+            "調査の十分性。pass なら追加調査不要、fail なら follow_up_queries を埋める。"
+        )
     )
     comment: str = Field(description="評価の理由・不足箇所の具体的な指摘。")
-    follow_up_queries: Optional[list[SearchQuery]] = Field(
+    follow_up_queries: list[SearchQuery] | None = Field(
         default=None,
-        description="grade=fail のときに不足を埋めるための追加検索クエリ。pass なら null。",
+        description=(
+            "grade=fail のときに不足を埋めるための追加検索クエリ。pass なら null。"
+        ),
     )
 
 
@@ -190,17 +198,22 @@ def _section_researcher_instruction(context: ReadonlyContext) -> str:
     target_date = context.state.get("temp:target_date", "")
     dosei_text = context.state.get("temp:dosei_text", "")
     return f"""\
-あなたは「漫画台本作家のための取材リサーチャー」です。下記「対象の首相動静」を題材に、後段の漫画台本生成エージェントが 5 コマ漫画を書けるように、ニュース材料を集めてください。
+あなたは「漫画台本作家のための取材リサーチャー」です。
+下記「対象の首相動静」を題材に、
+後段の漫画台本生成エージェントが 5 コマ漫画を書けるように、ニュース材料を集めてください。
 
 # あなたの役割: 素材を均等に提供する取材役
 
-scenario writer は「学べる・興味を持つ・身近に感じる」を満たす漫画を作ります。あなたは **その素材を提供する取材役** です。3 軸の素材を **均等に** 揃えてください:
+scenario writer は「学べる・興味を持つ・身近に感じる」を満たす漫画を作ります。
+あなたは **その素材を提供する取材役** です。3 軸の素材を **均等に** 揃えてください:
 
 - **学べる素材**: 当日の政治・政策の動き（誰が何を決めたか・何が議題か）
 - **興味を持つ素材**: タイムライン上の異変・スクープ的な動き
 - **身近に感じる素材**: 政治家の発言・人間味エピソード
 
-人物エピソードに偏らないこと。コマ配分・演出・敬意フィルタ・ハッシュタグ選定は scenario writer の責務なので、あなたは事実を出典付きで提供することに徹する。
+人物エピソードに偏らないこと。
+コマ配分・演出・敬意フィルタ・ハッシュタグ選定は scenario writer の責務なので、
+あなたは事実を出典付きで提供することに徹する。
 
 ---
 
@@ -216,7 +229,8 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 ## [SCOOP] 漫画ネタ候補（最重要・最初に着手）
 
-下記 3 ジャンルから **それぞれ最低 1-2 件** ずつ拾う。コマ割り・演出指示は scenario writer の仕事なので書かない:
+下記 3 ジャンルから **それぞれ最低 1-2 件** ずつ拾う。
+コマ割り・演出指示は scenario writer の仕事なので書かない:
 
 ### A. タイムライン異変型 — 「えっ?」と思う動き
 異様に短い面会・急な離席・驚きの動線・異例の組合せ・数字が立つ事象。
@@ -224,17 +238,22 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 ### B. 政策決定型 — 当日のニュースの中身
 当日決まったこと・発表されたこと・大きく動いた案件・対外発言の中心テーマ。
-例: 「アフリカ4カ国歴訪、レアメタル確保が主題」「外国人政策で日本語学習課程試行」
+例: 「アフリカ4カ国歴訪、レアメタル確保が主題」
+「外国人政策で日本語学習課程試行」
 
 ### C. 人物エピソード型 — 「人」として身近に感じる切り口
 直接発言・人間味・趣味・対立・ほのぼの。
-例: 「『僕が作った』とコロン香る市川局長」「トゥンクトゥンクお気に入りの高市首相」
+例: 「『僕が作った』とコロン香る市川局長」
+「トゥンクトゥンクお気に入りの高市首相」
 
-`tavily_search` で jiji/nhk/asahi/yahoo を広く当たり、ピンと来た URL は `summarize_url` で深掘り。1-2 行の紹介で終わらせず、**直接 quote と背景** をセットで取れ。
+`tavily_search` で jiji/nhk/asahi/yahoo を広く当たり、
+ピンと来た URL は `summarize_url` で深掘り。
+1-2 行の紹介で終わらせず、**直接 quote と背景** をセットで取れ。
 
 ## [PEOPLE] 主要人物のキャラクターシート
 
-動静に登場する主要人物 (高市総理を除く、概ね 8-12 名) について、漫画家が画と性格を起こせるレベルの素材を集める:
+動静に登場する主要人物 (高市総理を除く、概ね 8-12 名) について、
+漫画家が画と性格を起こせるレベルの素材を集める:
 - 漢字氏名・フリガナ・性別・年齢・所属（党派・役職）
 - 経歴の **要点** (細かい歴任ポストは不要、印象的なものだけ)
 - **最近の直接発言** を 1-2 個 verbatim で
@@ -244,11 +263,14 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 ## [MEETINGS] 各面会・会議の詳細
 
-動静の面会について、議題・決定事項・主要な発言があれば事実ベースで簡潔に記録する。読者がニュースを学ぶ手がかりになるので、形式的だからといって安易に切り捨てない。本当に詳細不明な短時間ブリーフィングは無理に膨らませない。
+動静の面会について、議題・決定事項・主要な発言があれば事実ベースで簡潔に記録する。
+読者がニュースを学ぶ手がかりになるので、形式的だからといって安易に切り捨てない。
+本当に詳細不明な短時間ブリーフィングは無理に膨らませない。
 
 ## [BACKGROUND] 周辺政治情勢
 
-対象日 ({target_date}) の前日・翌日も含む同時期の動向。当日のニュースの伏線・背景になるもの:
+対象日 ({target_date}) の前日・翌日も含む同時期の動向。
+当日のニュースの伏線・背景になるもの:
 - `tavily_search` を 5-8 回、多角的なキーワードで
 - 重要そうな関連報道は `summarize_url` で深掘り
 
@@ -258,7 +280,8 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 このフェーズは「checklist 網羅」とは別軸で iterative に動く:
 
-- `summarize_url` の戻り要約は毎回必ず読む。下記が見つかったら **追加で search/summarize_url を実行**:
+- `summarize_url` の戻り要約は毎回必ず読む。
+  下記が見つかったら **追加で search/summarize_url を実行**:
   - **新しい人物名** (動静に無いが文脈で重要)
   - **新しい論点・固有名詞** (制度名・会議体・法案名・事件・企業名)
   - **新しい引用元 URL** → 重要なら再帰的深掘り
@@ -285,7 +308,11 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 ## 漫画ネタ候補
 
-漫画台本作家への素材提供。**[A] タイムライン異変型 / [B] 政策決定型 / [C] 人物エピソード型** から **それぞれ最低 1-2 件**、合計 6-9 件。各ネタは「キャッチコピー + 何が起きたか（直接 quote 含む）+ 出典」。コマ割り・演出指示は書かない:
+漫画台本作家への素材提供。
+**[A] タイムライン異変型 / [B] 政策決定型 / [C] 人物エピソード型**
+から **それぞれ最低 1-2 件**、合計 6-9 件。
+各ネタは「キャッチコピー + 何が起きたか（直接 quote 含む）+ 出典」。
+コマ割り・演出指示は書かない:
 
 - **[A] 異例の 11 分退席**: 〜〜〜。 [出典: タイトル (配信日) URL]
 - **[B] アフリカ4カ国歴訪、レアメタル確保が主題**: 〜〜〜。 [出典: ...]
@@ -302,10 +329,13 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 ## 各面会・会議の詳細
 
-動静の面会を時系列に並べる。**漫画化に効きそうな面会は段落で narrative 重視**、機械的な面会は 1 行で OK。テンプレートは強制しない。
+動静の面会を時系列に並べる。
+**漫画化に効きそうな面会は段落で narrative 重視**、機械的な面会は 1 行で OK。
+テンプレートは強制しない。
 
 ### 〇時〇分 〇〇との面会
-（議題が漫画化に使えるなら段落で詳しく書く。背景・出席者・決定事項を物語的に。直接 quote があれば必ず収録。）
+（議題が漫画化に使えるなら段落で詳しく書く。
+背景・出席者・決定事項を物語的に。直接 quote があれば必ず収録。）
 [出典: タイトル (配信日) URL]
 
 ### 〇時〇分 〇〇との面会
@@ -313,7 +343,8 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 ## 周辺政治情勢
 
-日付別の見出しには **対象日に基づく実際の日付（M月D日）を埋める** こと（"対象日の前日" のような文字列リテラルは使わない）:
+日付別の見出しには **対象日に基づく実際の日付（M月D日）を埋める** こと
+（"対象日の前日" のような文字列リテラルは使わない）:
 
 ### 前日 (M月D日)
 - ネタ 1: 〜〜 [出典: URL]
@@ -324,11 +355,15 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 ### 翌日 (M月D日)
 - ネタ 1: 〜〜 [出典: URL]
 
-「翌日の動向」は **対象日以前に配信された記事に書かれた予定情報** （朝刊の予告記事、政府の事前発表等）から拾うこと。対象日より後に配信された後追い記事は使用禁止。
+「翌日の動向」は **対象日以前に配信された記事に書かれた予定情報**
+（朝刊の予告記事、政府の事前発表等）から拾うこと。
+対象日より後に配信された後追い記事は使用禁止。
 
 ## 参照ソース
 
-利用した全ソースを 1 行 1 件で列挙。`summarize_url` の戻り値の `source_title` / `publish_date` をそのまま使う。タイトル不明・配信日不明のものは載せない:
+利用した全ソースを 1 行 1 件で列挙。
+`summarize_url` の戻り値の `source_title` / `publish_date` をそのまま使う。
+タイトル不明・配信日不明のものは載せない:
 
 - [src-1] タイトル | 配信日: YYYY年MM月DD日 | URL: https://...
 - [src-2] タイトル | 配信日: YYYY年MM月DD日 | URL: https://...
@@ -351,7 +386,10 @@ def _research_evaluator_instruction(context: ReadonlyContext) -> str:
     target_date = context.state.get("temp:target_date", "")
     findings = context.state.get(_FINDINGS_KEY, "")
     return f"""\
-あなたは漫画編集者です。下記 findings は「漫画台本作家に渡す取材資料」として、3 軸（学べる・興味を持つ・身近に感じる）の素材バランスが揃っているか評価してください。コマ配分や敬意フィルタは scenario writer の責務なので評価対象外。素材として揃っているかだけを見ます。
+あなたは漫画編集者です。下記 findings は「漫画台本作家に渡す取材資料」として、
+3 軸（学べる・興味を持つ・身近に感じる）の素材バランスが揃っているか評価してください。
+コマ配分や敬意フィルタは scenario writer の責務なので評価対象外。
+素材として揃っているかだけを見ます。
 
 対象日: {target_date}
 
@@ -365,17 +403,28 @@ findings:
 
 以下を厳しくチェック:
 
-1. **漫画ネタ候補のジャンルバランス** — `## 漫画ネタ候補` に [A] タイムライン異変型 / [B] 政策決定型 / [C] 人物エピソード型 が **それぞれ最低 1 件ずつ** あるか。合計 6+ 件、直接 quote 1+ 個含まれているか。人物エピソードばかりが 5 件並ぶようなら fail。
-2. **政策・決定事項のカバー率** — 当日の主要な政策動向（発表・決定・議題）が news.md から読み取れるか。
-3. **主要人物プロフィールの verbatim 発言** — 各人物に直接の最近発言があるか。経歴の羅列だけだと身近に感じられない。
-4. **時事的背景の網羅性** — `## 周辺政治情勢` で前日・当日・翌日それぞれ最低 1-2 件の動向があるか。
+1. **漫画ネタ候補のジャンルバランス** — `## 漫画ネタ候補` に
+   [A] タイムライン異変型 / [B] 政策決定型 / [C] 人物エピソード型 が
+   **それぞれ最低 1 件ずつ** あるか。合計 6+ 件、直接 quote 1+ 個含まれているか。
+   人物エピソードばかりが 5 件並ぶようなら fail。
+2. **政策・決定事項のカバー率** — 当日の主要な政策動向（発表・決定・議題）が
+   news.md から読み取れるか。
+3. **主要人物プロフィールの verbatim 発言** — 各人物に直接の最近発言があるか。
+   経歴の羅列だけだと身近に感じられない。
+4. **時事的背景の網羅性** — `## 周辺政治情勢` で前日・当日・翌日
+   それぞれ最低 1-2 件の動向があるか。
 
 # grade の決め方
 
-- **grade="pass"**: 漫画ネタ候補がジャンル A/B/C に分散しており、政策動向と人物発言と時事背景が揃っている
-- **grade="fail"**: 上記が顕著に欠ける場合。`comment` で具体的に欠陥を指摘し、`follow_up_queries` には **欠けているジャンルを補う方向** のクエリを 5-7 個生成する。例: 政策決定型が薄ければ「外国人政策 4月28日 決定事項」、タイムライン異変型が薄ければ「衆院本会議 高市 退席 ビデオ収録」など。
+- **grade="pass"**: 漫画ネタ候補がジャンル A/B/C に分散しており、
+  政策動向と人物発言と時事背景が揃っている
+- **grade="fail"**: 上記が顕著に欠ける場合。`comment` で具体的に欠陥を指摘し、
+  `follow_up_queries` には **欠けているジャンルを補う方向** のクエリを 5-7 個生成する。
+  例: 政策決定型が薄ければ「外国人政策 4月28日 決定事項」、
+  タイムライン異変型が薄ければ「衆院本会議 高市 退席 ビデオ収録」など。
 
-応答は Feedback schema に validate される **単一の raw JSON object** のみ。前後に説明文を付けないこと。
+応答は Feedback schema に validate される **単一の raw JSON object** のみ。
+前後に説明文を付けないこと。
 """
 
 
@@ -388,7 +437,8 @@ _research_evaluator = LlmAgent(
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
     output_key=_EVAL_KEY,
-    # 直前の section_researcher の tool 呼び出し履歴は不要 (findings は state 経由で受け取る)
+    # 直前の section_researcher の tool 呼び出し履歴は不要
+    # (findings は state 経由で受け取る)
     include_contents="none",
 )
 
@@ -399,11 +449,14 @@ def _enhanced_search_instruction(context: ReadonlyContext) -> str:
     evaluation = context.state.get(_EVAL_KEY, {}) or {}
     comment = evaluation.get("comment", "")
     follow_up_queries = evaluation.get("follow_up_queries") or []
-    queries_text = "\n".join(
-        f"- {q.get('search_query', '')}" for q in follow_up_queries if q
-    ) or "(なし)"
+    queries_text = (
+        "\n".join(f"- {q.get('search_query', '')}" for q in follow_up_queries if q)
+        or "(なし)"
+    )
     return f"""\
-あなたは漫画台本のための取材リサーチャーで、前回 findings は漫画編集者に **'fail'** と評価されました。「漫画化に効くネタ・直接発言・人間味」を補強してください。
+あなたは漫画台本のための取材リサーチャーで、
+前回 findings は漫画編集者に **'fail'** と評価されました。
+「漫画化に効くネタ・直接発言・人間味」を補強してください。
 
 対象日: {target_date}
 
@@ -416,8 +469,11 @@ def _enhanced_search_instruction(context: ReadonlyContext) -> str:
 
 # 手順
 
-1. 上記 follow_up_queries の **EVERY query** を `tavily_search` で実行（一つも省略しない）
-2. 候補 URL のうちネタになりそうなものを `summarize_url` で要約取得（focus には「直接発言」「人間味エピソード」「対立・批判発言」など漫画化に効く観点を書く）
+1. 上記 follow_up_queries の **EVERY query** を `tavily_search` で実行
+   （一つも省略しない）
+2. 候補 URL のうちネタになりそうなものを `summarize_url` で要約取得
+   （focus には「直接発言」「人間味エピソード」「対立・批判発言」など
+   漫画化に効く観点を書く）
 3. 既存 findings と統合し、**強化された完全な findings 全体** を出力
 
 既存 findings:
@@ -428,18 +484,22 @@ def _enhanced_search_instruction(context: ReadonlyContext) -> str:
 
 # CRITICAL RULES
 
-- snippet だけで判断せず、重要 URL は必ず `summarize_url` で要約取得（コンパクトな要約しか返さないので何度呼んでも安全）
+- snippet だけで判断せず、重要 URL は必ず `summarize_url` で要約取得
+  （コンパクトな要約しか返さないので何度呼んでも安全）
 - 配信日が対象日 {target_date} 当日またはそれ以前の記事のみ使用
 - 既存 findings の有用な情報は残し、新規情報を統合（差し替えではなく増強）
 - 出典 URL を必ず明記
 - `summarize_url` は 10-15 回程度まで使ってよい
-- **形式的な短時間面会を無理に膨らませない**。空白でも漫画化に支障なければそのままで OK
+- **形式的な短時間面会を無理に膨らませない**。
+  空白でも漫画化に支障なければそのままで OK
 
 ---
 
 # 最終出力
 
-Phase 1 と同じ markdown 構造（漫画ネタ候補 / 主要人物プロフィール / 各面会・会議の詳細 / 周辺政治情勢 / 参照ソース）で、欠落項目を埋めた **完全版 findings** 全体を応答テキストとして出力。
+Phase 1 と同じ markdown 構造
+（漫画ネタ候補 / 主要人物プロフィール / 各面会・会議の詳細 / 周辺政治情勢 / 参照ソース）
+で、欠落項目を埋めた **完全版 findings** 全体を応答テキストとして出力。
 """
 
 
@@ -450,7 +510,8 @@ _enhanced_search_executor = LlmAgent(
     instruction=_enhanced_search_instruction,
     tools=_build_research_tools(),
     output_key=_FINDINGS_KEY,
-    # 過去の section_researcher / 前 iteration の履歴は不要 (findings/eval を state から取る)
+    # 過去の section_researcher / 前 iteration の履歴は不要
+    # (findings/eval を state から取る)
     include_contents="none",
 )
 
@@ -460,11 +521,14 @@ def _news_composer_instruction(context: ReadonlyContext) -> str:
     dosei_text = context.state.get("temp:dosei_text", "")
     findings = context.state.get(_FINDINGS_KEY, "")
     return f"""\
-あなたは漫画台本作家への資料を組み立てる編集者です。下記「首相動静本文」と「research findings」から、最終 news.md を作ります。
+あなたは漫画台本作家への資料を組み立てる編集者です。
+下記「首相動静本文」と「research findings」から、最終 news.md を作ります。
 
 # ゴール再確認
 
-これは漫画台本生成エージェントが読む資料です。**漫画ネタとキャラ造形** が最優先で、官報のような網羅性は二の次。findings の良い部分を **漫画作家にとって読みやすく** 並べ直す。
+これは漫画台本生成エージェントが読む資料です。
+**漫画ネタとキャラ造形** が最優先で、官報のような網羅性は二の次。
+findings の良い部分を **漫画作家にとって読みやすく** 並べ直す。
 
 対象日: {target_date}
 
@@ -489,7 +553,11 @@ body フィールドに、以下の構造の markdown 全体を入れる:
 
 ## 漫画ネタ候補
 
-findings の `## 漫画ネタ候補` セクションをそのまま流用。漫画作家が真っ先に読むので **冒頭に置く**。各ネタは「[A/B/C ジャンル] キャッチコピー + 何が起きたか（直接 quote 含む） + 出典」のシンプルな構成。**コマ案・演出指示は書かない**（後段の scenario writer の仕事）。
+findings の `## 漫画ネタ候補` セクションをそのまま流用。
+漫画作家が真っ先に読むので **冒頭に置く**。
+各ネタは「[A/B/C ジャンル] キャッチコピー + 何が起きたか（直接 quote 含む） + 出典」
+のシンプルな構成。
+**コマ案・演出指示は書かない**（後段の scenario writer の仕事）。
 
 ## 主要人物プロフィール
 
@@ -502,7 +570,10 @@ findings の `## 漫画ネタ候補` セクションをそのまま流用。漫�
 
 ## 各面会・会議の詳細
 
-動静の面会を時系列に並べる。議題・決定事項・主要な発言があれば事実ベースで簡潔に記録する。読者がニュースを学ぶ手がかりになるので、形式的だからといって安易に切り捨てない。テンプレートを強制せず、findings に書かれた粒度で書く:
+動静の面会を時系列に並べる。
+議題・決定事項・主要な発言があれば事実ベースで簡潔に記録する。
+読者がニュースを学ぶ手がかりになるので、形式的だからといって安易に切り捨てない。
+テンプレートを強制せず、findings に書かれた粒度で書く:
 
 ### 〇時〇分〜〇時〇分 〇〇との面会
 議題・背景・決定事項・直接 quote を簡潔に。直接 quote はそのまま「」付きで収録。
@@ -532,13 +603,15 @@ findings の `## 漫画ネタ候補` セクションをそのまま流用。漫�
 
 findings 末尾の **「## 参照ソース」セクションをそのまま流用** すること。
 
-- findings の `[src-N] タイトル | 配信日: YYYY年MM月DD日 | URL: https://...` を下記フォーマットに変換:
+- findings の `[src-N] タイトル | 配信日: YYYY年MM月DD日 | URL: https://...`
+  を下記フォーマットに変換:
   ```
   - タイトル: <タイトル>
     配信日: <YYYY年MM月DD日>
     URL: <URL>
   ```
-- タイトルや配信日が「不明」「出典情報」のような汎用文字列・空のものは載せない (URL のみは省く)
+- タイトルや配信日が「不明」「出典情報」のような汎用文字列・空のものは載せない
+  (URL のみは省く)
 - 本文中の inline `[出典: タイトル (配信日) URL]` で参照ソース未記載のものは追加してよい
 - 重複 URL は 1 件にまとめる
 
@@ -556,7 +629,8 @@ findings 末尾の **「## 参照ソース」セクションをそのまま流�
 
 # 応答フォーマット (output_schema=StepOutput)
 
-- findings が充実しており news.md を組み立てられた場合: `body` に上記 markdown 全体、`error` は空文字
+- findings が充実しており news.md を組み立てられた場合:
+  `body` に上記 markdown 全体、`error` は空文字
 - findings が空または不十分で組み立て不可の場合: `body` は空文字、`error` に理由
 """
 

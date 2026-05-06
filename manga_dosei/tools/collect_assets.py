@@ -1,7 +1,7 @@
 """collect_assets: 台本に登場する人物・場所などの参照画像を Wikipedia から集める。"""
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 from google.adk.agents import LlmAgent
@@ -25,7 +25,6 @@ from manga_dosei.tools._wikipedia import (
     wiki_image_search,
     wikimedia_user_agent,
 )
-
 
 _STEP = "collect_assets"
 _MANIFEST_ARTIFACT = "manifests/assets.json"
@@ -145,20 +144,26 @@ def _build_prompt(scenario_text: str) -> str:
 
 上記が「漫画にする首相動静」の台本です。
 
-この台本の登場人物一覧を含めた人物・場所などマンガの資料として様々なものに対して、Wikipedia のツールを利用して、画像を取得してください。
-ただし国旗など明らかに画像生成AI が知っているものは不要です。また「高市早苗」もすでにあるので不要。
+この台本の登場人物一覧を含めた人物・場所などマンガの資料として様々なものに対して、
+Wikipedia のツールを利用して、画像を取得してください。
+ただし国旗など明らかに画像生成AI が知っているものは不要です。
+また「高市早苗」もすでにあるので不要。
 取得する画像の上限は7枚で人物優先です。優先順位をつけて取得する画像を決定してください。
 
-対応する画像形式は JPEG (image/jpeg, image/jpg)、PNG (image/png)、GIF (image/gif)、WEBP (image/webp) のみです（大文字小文字は不問）。SVG など他の形式は別の候補を選んでください。
+対応する画像形式は JPEG (image/jpeg, image/jpg)、PNG (image/png)、GIF (image/gif)、
+WEBP (image/webp) のみです（大文字小文字は不問）。
+SVG など他の形式は別の候補を選んでください。
 
 保存は assets/田中太郎.png や assets/国会議事堂.jpg のようにフルネームで配置してください。
 
 ## ツールの使い方
 
 1. wiki_image_search で候補画像を検索する
-2. 候補から相応しいものを wiki_image_info で詳細（ライセンス・サイズ・description URL）を取得する
+2. 候補から相応しいものを wiki_image_info で
+   詳細（ライセンス・サイズ・description URL）を取得する
 3. download_image を呼び、画像を artifact として保存する
-4. download_image の引数には name（フルネーム）, source_url, description_url, license, mime_type を必ず含める（manifest 生成のため）
+4. download_image の引数には name（フルネーム）, source_url, description_url,
+   license, mime_type を必ず含める（manifest 生成のため）
 
 すべて完了したら何枚を集めたかを簡潔に報告してください。
 """.strip()
@@ -169,7 +174,7 @@ def _build_instruction(context: ReadonlyContext) -> str:
     return _build_prompt(scenario_text)
 
 
-async def _before(callback_context: CallbackContext) -> Optional[types.Content]:
+async def _before(callback_context: CallbackContext) -> types.Content | None:
     err = await prepare_step(
         callback_context,
         step=_STEP,
@@ -182,7 +187,7 @@ async def _before(callback_context: CallbackContext) -> Optional[types.Content]:
     return None
 
 
-async def _after(callback_context: CallbackContext) -> Optional[types.Content]:
+async def _after(callback_context: CallbackContext) -> types.Content | None:
     target_date = callback_context.state.get("temp:target_date", "")
     collected = callback_context.state.get(_COLLECTED_KEY, []) or []
 
