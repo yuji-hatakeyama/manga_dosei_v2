@@ -17,10 +17,14 @@ from manga_dosei.agent import root_agent
 from manga_dosei.tools.generate_page_gemini import (
     PAGE_VARIANT_COUNT as GEMINI_PAGE_VARIANT_COUNT,
 )
-from manga_dosei.tools.generate_page_gpt import (
-    PAGE_VARIANT_COUNT as GPT_PAGE_VARIANT_COUNT,
-)
 from manga_dosei.validation import validate_target_date
+
+# NOTE: generate_page_gpt は ADK agent / web UI 経由では引き続き利用可能だが、
+# 日次 CLI では呼び出さない方針（配置・文字品質ともに Gemini の方が安定するため）。
+# 再有効化する場合: 上の import で
+# `from manga_dosei.tools.generate_page_gpt import PAGE_VARIANT_COUNT
+#     as GPT_PAGE_VARIANT_COUNT` を追加し、STEPS に
+# `*_page_steps("generate_page_gpt", GPT_PAGE_VARIANT_COUNT)` を戻す。
 
 SESSION_URI = "sqlite+aiosqlite:///./.adk/sessions.db"
 ARTIFACT_DIR = Path(".adk/artifacts")
@@ -40,7 +44,6 @@ STEPS: list[_Step] = [
     ("resize_assets", {}),
     ("define_layout", {}),
     *_page_steps("generate_page_gemini", GEMINI_PAGE_VARIANT_COUNT),
-    *_page_steps("generate_page_gpt", GPT_PAGE_VARIANT_COUNT),
 ]
 
 # CLI レベルで retry しないツール。ツール内部で retry を持っているものを
