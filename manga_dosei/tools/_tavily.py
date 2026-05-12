@@ -1,7 +1,8 @@
 """Tavily MCP toolset.
 
-Gemini 内蔵 grounding (`google_search` / `url_context`) は jiji.com の URL を
-安定して surface しないため、Tavily の Web 検索 + コンテンツ抽出 MCP server を
+Gemini 内蔵 grounding (`google_search` / `url_context`) は
+JIJI.COM (www.jiji.com) の URL を安定して surface しないため、
+Tavily の Web 検索 + コンテンツ抽出 MCP server を
 代替として使う。Tavily の remote (Streamable HTTP) MCP に接続し、
 `tavily_search` / `tavily_extract` 等のツールを LlmAgent に提供する。
 """

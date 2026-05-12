@@ -1,7 +1,7 @@
 """URL を取得して本文テキストを返すシンプルな fetcher。
 
 Tavily extract は markdown 変換時に `<time datetime>` 等の semantic HTML を
-落とすため、jiji.com など報道記事の配信日時が取れない。このツールは
+落とすため、JIJI.COM (www.jiji.com) など報道記事の配信日時が取れない。このツールは
 httpx で直接 HTML を取得し、boilerplate を除いた visible text をそのまま返す。
 配信日時・タイトル等の判別は呼び出し側 LLM に任せる。
 """
@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-# jiji.com など報道サイトは bot 判定で 403 を返すことがあるため、
+# JIJI.COM (www.jiji.com) など報道サイトは bot 判定で 403 を返すことがあるため、
 # 一般的なブラウザ UA を前段に置きつつ、末尾に project 識別子と連絡先 (GitHub URL) を
 # 付けて自己申告する。連絡先を付けるのは responsible scraping のための慣行。
 _USER_AGENT = (

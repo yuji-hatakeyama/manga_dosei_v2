@@ -1,4 +1,7 @@
-"""fetch_dosei: 対象日の jiji.com 首相動静を取得して dosei.md を保存する。"""
+"""fetch_dosei: 対象日の JIJI.COM (www.jiji.com) 首相動静を取得して
+dosei.md を保存する。"""
+
+from datetime import date, timedelta
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -25,7 +28,8 @@ _OUTPUT_KEY = "temp:fetch_dosei_output"
 
 
 _DESCRIPTION = """\
-対象日の jiji.com 首相動静を取得して dosei.md を artifact として保存するツール。
+対象日の JIJI.COM (www.jiji.com) 首相動静を取得して
+dosei.md を artifact として保存するツール。
 
 前提: なし（ワークフローの最初のステップ）。
 引数: target_date は YYYYMMDD 形式の対象日。
@@ -39,25 +43,33 @@ def _build_prompt(target_date: str) -> str:
     month = int(target_date[4:6])
     day = int(target_date[6:8])
     date_jp = f"{year}年{month}月{day}日"
-    md_jp = f"{month}月{day}日"
+    iso = f"{year}-{month:02d}-{day:02d}"
+
+    target = date(int(year), month, day)
+    start_iso = (target - timedelta(days=2)).isoformat()
     return f"""
-{target_date} (YYYYMMDD形式 = {date_jp}、配信日ではなく対象日)
-の首相動静を jiji.com から取得してください。
+{target_date} (YYYYMMDD形式 = {date_jp}、配信日ではなく対象日, ISO {iso})
+の首相動静を JIJI.COM (www.jiji.com) から取得してください。
 
 取得手順:
-1. `tavily_search` で対象日の首相動静記事を検索する。クエリ例:
-   - 「首相動静 {md_jp} jiji」
-   - 「首相動静（{md_jp}）」
-   - 「{date_jp} 首相動静 時事通信」
-   ヒットしないときはクエリを変えて複数回試すこと。
-2. 検索結果から jiji.com の記事 URL
+1. `tavily_search` で対象日の首相動静記事を検索する。
+   **必須パラメータ** (毎回必ず付ける):
+   - `query`: 「首相動静 {date_jp}」
+   - `topic="news"` — ニュース専用 index を使う（古い記事のノイズを減らす）
+   - `search_depth="advanced"` — 取りこぼし対策に深い検索を使う
+   - `max_results=20` — Tavily の上限。候補を取りこぼさないため最大値
+   - `include_domains=["www.jiji.com"]` — JIJI.COM 以外の検索結果を除外する
+     (サブドメイン厳密照合のため `jiji.com` ではなく `www.jiji.com`)
+   - `start_date="{start_iso}"` — 対象日の 2 日前以降に配信された記事に絞る
+     （Tavily の index ラグ対策）。`end_date` は指定しない
+2. 検索結果から JIJI.COM の記事 URL
    (例: `https://www.jiji.com/jc/article?...`) を 1 つ選び、
    `fetch_url` でその URL の本文を取得する。
    `fetch_url` の戻り値の `content` フィールドが本文 plain text。
 3. 取得した本文の中から「首相動静」記事部分をそのまま転記する。
    記事末尾には「2026年MM月DD日HH時MM分配信」のような
    **配信日時表記がそのまま含まれている** ので、それも見落とさず転記する。
-4. どうしても jiji.com 本サイトの記事本文に到達できなければ、body は空のまま、
+4. どうしても JIJI.COM 本サイトの記事本文に到達できなければ、body は空のまま、
    error に試したクエリと回数を書いて失敗報告すること。
 
 【重要】絶対に守ること:

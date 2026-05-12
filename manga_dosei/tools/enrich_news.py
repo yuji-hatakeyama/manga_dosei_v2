@@ -9,6 +9,7 @@ adk-samples/python/agents/deep-search の構造を踏襲。
 """
 
 from collections.abc import AsyncGenerator
+from datetime import date, timedelta
 from typing import Literal
 
 from google.adk.agents import BaseAgent, LlmAgent, LoopAgent, SequentialAgent
@@ -31,6 +32,30 @@ from manga_dosei.tools._fetch_url import fetch_url
 from manga_dosei.tools._tavily import build_tavily_toolset
 
 _fetch_url_tool = FunctionTool(func=fetch_url)
+
+
+def _tavily_params_block(target_date: str) -> str:
+    """section_researcher / enhanced_searcher 共通の `tavily_search` 指針。
+
+    対象日翌日までを `end_date` にして、未来の後追い情報を index 段階で除外する。
+    """
+    y, m, d = int(target_date[:4]), int(target_date[4:6]), int(target_date[6:8])
+    end_iso = (date(y, m, d) + timedelta(days=1)).isoformat()
+    return f"""\
+# `tavily_search` パラメータ指針 (毎回必ず付ける)
+
+クエリの種類で `include_domains` を切り替える。それ以外は両者共通:
+
+- `topic="news"`
+- `max_results=20`
+- `end_date="{end_iso}"` — 対象日の翌日まで。未来の後追い情報を含めない
+
+## ニュース系クエリ ([SCOOP] / [MEETINGS] / [BACKGROUND] / follow-up)
+- `include_domains=["www.jiji.com"]`
+
+## 人物背景クエリ ([PEOPLE])
+- `include_domains=["news.yahoo.co.jp"]`
+"""
 
 
 # --- summarize_url sub-agent (AgentTool) ---
@@ -140,7 +165,7 @@ _MAX_REFINEMENT_ITERATIONS = 2
 
 
 _DESCRIPTION = """\
-dosei.md に jiji.com 等の関連ニュースと人物背景を付加して
+dosei.md に JIJI.COM (www.jiji.com) 等の関連ニュースと人物背景を付加して
 news.md を artifact として保存するツール。
 
 前提: dosei.md が存在すること。
@@ -197,10 +222,13 @@ class EscalationChecker(BaseAgent):
 def _section_researcher_instruction(context: ReadonlyContext) -> str:
     target_date = context.state.get("temp:target_date", "")
     dosei_text = context.state.get("temp:dosei_text", "")
+    tavily_params = _tavily_params_block(target_date)
     return f"""\
 あなたは「漫画台本作家のための取材リサーチャー」です。
 下記「対象の首相動静」を題材に、
 後段の漫画台本生成エージェントが 5 コマ漫画を書けるように、ニュース材料を集めてください。
+
+{tavily_params}
 
 # あなたの役割: 素材を均等に提供する取材役
 
@@ -246,7 +274,7 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 例: 「『僕が作った』とコロン香る市川局長」
 「トゥンクトゥンクお気に入りの高市首相」
 
-`tavily_search` で jiji/nhk/asahi/yahoo を広く当たり、
+`tavily_search` で www.jiji.com を当たり、
 ピンと来た URL は `summarize_url` で深掘り。
 1-2 行の紹介で終わらせず、**直接 quote と背景** をセットで取れ。
 
@@ -259,7 +287,7 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 - **最近の直接発言** を 1-2 個 verbatim で
 - **人間味要素** (口癖・趣味・持病・対立関係・特徴的エピソード) があれば
 
-`tavily_search` + `summarize_url` で Wikipedia / 公式プロフィール / 発言記事を当たる。
+`tavily_search` + `summarize_url` で news.yahoo.co.jp の関連記事を当たる。
 
 ## [MEETINGS] 各面会・会議の詳細
 
@@ -453,10 +481,13 @@ def _enhanced_search_instruction(context: ReadonlyContext) -> str:
         "\n".join(f"- {q.get('search_query', '')}" for q in follow_up_queries if q)
         or "(なし)"
     )
+    tavily_params = _tavily_params_block(target_date)
     return f"""\
 あなたは漫画台本のための取材リサーチャーで、
 前回 findings は漫画編集者に **'fail'** と評価されました。
 「漫画化に効くネタ・直接発言・人間味」を補強してください。
+
+{tavily_params}
 
 対象日: {target_date}
 
