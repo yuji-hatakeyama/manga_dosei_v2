@@ -15,8 +15,11 @@ A daily pipeline that turns the Japanese Prime Minister's published schedule (`�
 1. Fetches the day's `首相動静` article from JIJI.COM (www.jiji.com).
 2. Enriches it with background research (Tavily web search).
 3. Drafts a manga script.
-4. Collects character / location reference images from Wikimedia Commons.
-5. Resizes the references and generates the final manga page with multiple backends (Gemini Image and OpenAI GPT Image), producing several variants to pick from.
+4. Collects character / location reference images from Wikimedia Commons and resizes them.
+5. Derives a structured page layout (panel order, per-panel character placement, balloon read order) from the script.
+6. Generates the final manga page with Gemini Image, producing several variants to pick from.
+
+The daily CLI currently uses only the Gemini Image backend. The OpenAI GPT Image backend is still wired into the ADK agent and reachable from `adk web`, but is not invoked by `uv run manga_dosei`.
 
 ## Tech stack
 
@@ -24,7 +27,7 @@ A daily pipeline that turns the Japanese Prime Minister's published schedule (`�
 - **Tooling**: uv, httpx, BeautifulSoup, Pillow, ...
 - **Framework**: [Google ADK](https://github.com/google/adk-python)
 - **LLM (text)**: Gemini (`gemini-3.1-pro-preview` by default)
-- **LLM (image)**: Gemini Image (`gemini-3-pro-image-preview` by default) and OpenAI GPT Image (`gpt-image-2` by default)
+- **LLM (image)**: Gemini Image (`gemini-3-pro-image-preview` by default; OpenAI GPT Image `gpt-image-2` available via the ADK agent but not invoked by the daily CLI)
 - **Web search (MCP)**: [Tavily](https://docs.tavily.com/)
 - **Data sources**: JIJI.COM (www.jiji.com), Wikimedia Commons
 

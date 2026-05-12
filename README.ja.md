@@ -15,8 +15,11 @@
 1. JIJI.COM (www.jiji.com) から対象日の `首相動静` を取得
 2. Tavily で関連ニュースを調査して肉付け
 3. 漫画台本を生成
-4. 登場人物・場所の参考画像を Wikimedia Commons から収集
-5. 参考画像をリサイズし、Gemini Image と OpenAI GPT Image の複数バックエンドで漫画ページを生成（バリアントから選ぶ）
+4. 登場人物・場所の参考画像を Wikimedia Commons から収集してリサイズ
+5. 台本からページレイアウト（コマ並び・各コマのキャラ配置・吹き出し読み順）を構造化して書き出し
+6. Gemini Image で漫画ページを複数バリアント生成（その中から手動で選択）
+
+日次 CLI は現状 Gemini Image のみを利用します。OpenAI GPT Image バックエンドは ADK エージェントには登録されていて `adk web` から呼び出せますが、`uv run manga_dosei` 経由では呼ばれません。
 
 ## 使用技術
 
@@ -24,7 +27,7 @@
 - **ツール / ライブラリ**: uv, httpx, BeautifulSoup, Pillow ほか
 - **フレームワーク**: [Google ADK](https://github.com/google/adk-python)
 - **LLM (text)**: Gemini (デフォルト `gemini-3.1-pro-preview`)
-- **LLM (image)**: Gemini Image (デフォルト `gemini-3-pro-image-preview`) と OpenAI GPT Image (デフォルト `gpt-image-2`)
+- **LLM (image)**: Gemini Image (デフォルト `gemini-3-pro-image-preview`)。OpenAI GPT Image (`gpt-image-2`) はエージェント経由で利用可能ですが日次 CLI からは呼びません
 - **Web 検索 (MCP)**: [Tavily](https://docs.tavily.com/)
 - **データソース**: JIJI.COM (www.jiji.com)、Wikimedia Commons
 
