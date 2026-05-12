@@ -14,6 +14,12 @@ from google.genai import types
 
 from manga_dosei import APP_NAME, DEFAULT_USER_ID
 from manga_dosei.agent import root_agent
+from manga_dosei.tools.generate_page_gemini import (
+    PAGE_VARIANT_COUNT as GEMINI_PAGE_VARIANT_COUNT,
+)
+from manga_dosei.tools.generate_page_gpt import (
+    PAGE_VARIANT_COUNT as GPT_PAGE_VARIANT_COUNT,
+)
 from manga_dosei.validation import validate_target_date
 
 SESSION_URI = "sqlite+aiosqlite:///./.adk/sessions.db"
@@ -21,17 +27,19 @@ ARTIFACT_DIR = Path(".adk/artifacts")
 
 _Step = tuple[str, dict[str, object]]
 
+
+def _page_steps(tool_name: str, count: int) -> list[_Step]:
+    return [(tool_name, {"page_number": n}) for n in range(1, count + 1)]
+
+
 STEPS: list[_Step] = [
     ("fetch_dosei", {}),
     ("enrich_news", {}),
     ("generate_scenario", {}),
     ("collect_assets", {}),
     ("resize_assets", {}),
-    ("generate_page_gemini", {"page_number": 1}),
-    ("generate_page_gemini", {"page_number": 2}),
-    ("generate_page_gemini", {"page_number": 3}),
-    ("generate_page_gemini", {"page_number": 4}),
-    ("generate_page_gemini", {"page_number": 5}),
+    *_page_steps("generate_page_gemini", GEMINI_PAGE_VARIANT_COUNT),
+    *_page_steps("generate_page_gpt", GPT_PAGE_VARIANT_COUNT),
 ]
 
 # CLI レベルで retry しないツール。ツール内部で retry を持っているものを

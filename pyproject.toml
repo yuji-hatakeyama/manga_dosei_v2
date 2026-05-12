@@ -9,6 +9,7 @@ dependencies = [
     "google-adk>=1.22.0",
     "google-genai>=1.0.0",
     "greenlet>=3.3.0",
+    "openai>=1.60.0",
     "pillow>=12.2.0",
     "python-dotenv>=1.2.1",
 ]

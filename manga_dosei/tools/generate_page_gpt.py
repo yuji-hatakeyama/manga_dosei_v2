@@ -1,26 +1,32 @@
-"""generate_page_gemini: Gemini Image を使って 1 ページ分の漫画画像を生成する。
+"""generate_page_gpt: OpenAI GPT Image を使って 1 ページ分の漫画画像を生成する。
 
-1 回呼ばれたら 1 回だけ Gemini Image API を呼び、画像を artifact として保存する。
+generate_page_gemini の OpenAI 版。1 回呼ばれたら 1 回だけ
+OpenAI Images Edit API を呼び、画像を artifact として保存する。
 内部 retry は持たない（CLI 側で page_number を変えながら複数回呼ぶ）。
 """
 
+import base64
 import os
 from pathlib import Path
 from typing import Any
 
-from google import genai
 from google.adk.tools import ToolContext
 from google.genai import types
+from openai import AsyncOpenAI
 
 from manga_dosei.validation import validate_target_date
 
-_STEP = "generate_page_gemini"
-_MODEL_LABEL = "gemini"
-_DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
-_ALLOWED_IMAGE_MIME = {"image/jpeg", "image/png"}
+_STEP = "generate_page_gpt"
+_MODEL_LABEL = "gpt"
+_DEFAULT_IMAGE_MODEL = "gpt-image-2"
+_IMAGE_SIZE = "1024x1536"
+_IMAGE_QUALITY = "high"
+_OUTPUT_FORMAT = "png"
+_OUTPUT_MIME = "image/png"
+_OUTPUT_EXT = ".png"
 
 # モデルごとに当たり外れの幅が異なるので、生成バリアント数はツール側で持つ。
-PAGE_VARIANT_COUNT = 5
+PAGE_VARIANT_COUNT = 2
 
 _SAMPLES_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "samples"
 _SAMPLE_PAGE_PATH = _SAMPLES_DIR / "sample.jpg"
@@ -226,33 +232,46 @@ _PROMPT_TEMPLATE = """## 指示
 """
 
 
-async def generate_page_gemini(
+# OpenAI Images Edit API は画像をフラットなリストでしか受け取れないため
+# (Gemini のようにテキスト/画像を交互配置できない)、添付順を別途宣言する。
+_IMAGE_ORDER_TEMPLATE = """
+
+### 添付画像の順序（重要）
+
+このリクエストには複数の参照画像を添付順に渡しています。下のリストの
+順序で各画像のラベル・用途を解釈してください。
+
+{lines}
+"""
+
+
+async def generate_page_gpt(
     target_date: str,
     page_number: int,
     tool_context: ToolContext,
 ) -> dict[str, Any]:
-    """1 ページ分の漫画画像を Gemini Image で 1 回生成し、artifact 保存する。
+    """1 ページ分の漫画画像を OpenAI GPT Image で 1 回生成し、artifact 保存する。
 
     前提:
         scenario.md artifact が存在すること（generate_scenario 完了想定）。
-        必要に応じて assets/* artifact を Gemini に参考画像として添付する。
+        必要に応じて assets/* artifact を OpenAI に参考画像として添付する。
 
     挙動:
-        - 1 回だけ Gemini Image API を呼ぶ（内部 retry なし）。
-        - 成功時は pages/gemini_<N>.<ext> として artifact 保存する。
+        - 1 回だけ OpenAI Images Edit API を呼ぶ（内部 retry なし）。
+        - 成功時は pages/gpt_<N>.png として artifact 保存する。
         - 失敗時は status=error を返し、CLI 側で必要なら 1 回 retry される。
 
     引数:
         target_date: YYYYMMDD 形式の対象日。
-        page_number: バリアント番号（artifact 名 pages/gemini_<N>.<ext> に使う）。
+        page_number: バリアント番号（artifact 名 pages/gpt_<N>.png に使う）。
 
     返り値（成功時）:
-        {"status": "success", "step": "generate_page_gemini",
-         "page_number": int, "artifact": "pages/gemini_<N>.<ext>",
-         "version": int, "bytes": int, "mime_type": str}
+        {"status": "success", "step": "generate_page_gpt",
+         "page_number": int, "artifact": "pages/gpt_<N>.png",
+         "version": int, "bytes": int, "mime_type": "image/png"}
 
     返り値（失敗時）:
-        {"status": "error", "step": "generate_page_gemini",
+        {"status": "error", "step": "generate_page_gpt",
          "page_number": int, "message": str}
     """
     try:
@@ -274,19 +293,11 @@ async def generate_page_gemini(
         )
     scenario_text = scenario_part.text
 
-    contents: list[Any] = [
-        f"{_PROMPT_TEMPLATE}{scenario_text}\n```",
-        "【ページ例】",
-        types.Part.from_bytes(
-            data=_SAMPLE_PAGE_PATH.read_bytes(),
-            mime_type="image/jpeg",
-        ),
-        "【参考資料: 高市早苗】",
-        types.Part.from_bytes(
-            data=_CHARACTER_REF_PATH.read_bytes(),
-            mime_type="image/jpeg",
-        ),
+    images: list[tuple[str, bytes, str]] = [
+        ("sample.jpg", _SAMPLE_PAGE_PATH.read_bytes(), "image/jpeg"),
+        ("sanae.jpg", _CHARACTER_REF_PATH.read_bytes(), "image/jpeg"),
     ]
+    image_labels: list[str] = ["【ページ例】", "【参考資料: 高市早苗】"]
 
     asset_keys = sorted(
         key for key in await tool_context.list_artifacts() if key.startswith("assets/")
@@ -299,55 +310,49 @@ async def generate_page_gemini(
             or not asset_part.inline_data.data
         ):
             continue
-        asset_name = key.removeprefix("assets/")
-        if "." in asset_name:
-            asset_name = asset_name.rsplit(".", 1)[0]
-        contents.append(f"【参考資料: {asset_name}】")
-        contents.append(
-            types.Part(
-                inline_data=types.Blob(
-                    data=asset_part.inline_data.data,
-                    mime_type=asset_part.inline_data.mime_type or "image/jpeg",
-                )
-            )
-        )
+        mime = (asset_part.inline_data.mime_type or "image/jpeg").lower()
+        # OpenAI Images Edit が受け付けるのは png/jpeg/webp のみ。
+        if mime not in {"image/png", "image/jpeg", "image/webp"}:
+            continue
+        filename = key.removeprefix("assets/") or "asset"
+        asset_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+        images.append((filename, asset_part.inline_data.data, mime))
+        image_labels.append(f"【参考資料: {asset_name}】")
 
-    model_name = os.getenv("GEMINI_IMAGE_MODEL", _DEFAULT_IMAGE_MODEL)
+    order_lines = "\n".join(f"{i + 1}. {label}" for i, label in enumerate(image_labels))
+    prompt = (
+        f"{_PROMPT_TEMPLATE}{scenario_text}\n```"
+        f"{_IMAGE_ORDER_TEMPLATE.format(lines=order_lines)}"
+    )
+
+    model_name = os.getenv("OPENAI_IMAGE_MODEL", _DEFAULT_IMAGE_MODEL)
     try:
-        client = genai.Client()
-        response = await client.aio.models.generate_content(
+        client = AsyncOpenAI()
+        response = await client.images.edit(
             model=model_name,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE", "TEXT"],
-                image_config=types.ImageConfig(image_size="2K"),
-            ),
+            image=list(images),
+            prompt=prompt,
+            size=_IMAGE_SIZE,
+            quality=_IMAGE_QUALITY,
+            output_format=_OUTPUT_FORMAT,
+            n=1,
         )
     except Exception as error:
-        return _error(f"gemini call failed: {error}", page_number=page_number)
+        return _error(f"openai call failed: {error}", page_number=page_number)
 
-    image_bytes: bytes | None = None
-    image_mime: str | None = None
-    parts = response.parts or []
-    for part in parts:
-        if part.inline_data and part.inline_data.data:
-            image_bytes = part.inline_data.data
-            image_mime = (part.inline_data.mime_type or "").lower() or "image/jpeg"
-            break
+    data_items = getattr(response, "data", None) or []
+    if not data_items or not getattr(data_items[0], "b64_json", None):
+        return _error("no image data in response", page_number=page_number)
 
-    if not image_bytes:
-        return _error("no image part in response", page_number=page_number)
-    if image_mime not in _ALLOWED_IMAGE_MIME:
-        return _error(
-            f"unexpected image mime: {image_mime}",
-            page_number=page_number,
-        )
+    try:
+        image_bytes = base64.b64decode(data_items[0].b64_json)
+    except (ValueError, TypeError) as error:
+        return _error(f"failed to decode image: {error}", page_number=page_number)
 
-    extension = ".jpg" if image_mime == "image/jpeg" else ".png"
-    artifact_name = f"pages/{_MODEL_LABEL}_{page_number}{extension}"
+    artifact_name = f"pages/{_MODEL_LABEL}_{page_number}{_OUTPUT_EXT}"
     version = await tool_context.save_artifact(
         artifact_name,
-        types.Part(inline_data=types.Blob(data=image_bytes, mime_type=image_mime)),
+        types.Part(inline_data=types.Blob(data=image_bytes, mime_type=_OUTPUT_MIME)),
     )
 
     tool_context.state.update(
@@ -366,7 +371,7 @@ async def generate_page_gemini(
         "artifact": artifact_name,
         "version": version,
         "bytes": len(image_bytes),
-        "mime_type": image_mime,
+        "mime_type": _OUTPUT_MIME,
     }
 
 

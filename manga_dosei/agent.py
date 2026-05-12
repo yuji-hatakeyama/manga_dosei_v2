@@ -8,6 +8,7 @@ from manga_dosei.tools import (
     enrich_news_tool,
     fetch_dosei_tool,
     generate_page_gemini,
+    generate_page_gpt,
     generate_scenario_tool,
     inspect_artifacts,
     resize_assets,
@@ -33,11 +34,13 @@ status=success を返していない限り、そのステップが完了した�
 3. generate_scenario
 4. collect_assets
 5. resize_assets
-6. generate_page_gemini (page_number 1〜5 を順に呼ぶ)
+6. generate_page_gemini と generate_page_gpt をそれぞれ規定回数呼ぶ
 
-generate_page_gemini は target_date (YYYYMMDD) と page_number (1〜5) の 2 引数を取り、
-1 回の呼び出しで 1 ページ分の画像を生成します。5 ページ揃えるには page_number を
-1, 2, 3, 4, 5 と順番に 5 回呼んでください。
+generate_page_gemini と generate_page_gpt は target_date (YYYYMMDD) と
+page_number の 2 引数を取り、1 回の呼び出しで 1 ページ分の画像を生成します。
+ツールごとに必要なバリアント数（呼び出し回数）が異なるため、各ツールの
+モジュール定数 PAGE_VARIANT_COUNT を参照し、page_number=1 から
+PAGE_VARIANT_COUNT まで順番に呼んでください。
 
 ## 進め方のルール
 
@@ -64,5 +67,6 @@ generate_page_gemini は target_date (YYYYMMDD) と page_number (1〜5) の 2 �
         collect_assets_tool,
         resize_assets,
         generate_page_gemini,
+        generate_page_gpt,
     ],
 )
