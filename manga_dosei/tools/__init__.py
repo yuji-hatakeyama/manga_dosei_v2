@@ -1,6 +1,7 @@
 """ADK tools for the manga dosei workflow."""
 
 from manga_dosei.tools.collect_assets import collect_assets_tool
+from manga_dosei.tools.define_layout import define_layout_tool
 from manga_dosei.tools.enrich_news import enrich_news_tool
 from manga_dosei.tools.fetch_dosei import fetch_dosei_tool
 from manga_dosei.tools.generate_page_gemini import generate_page_gemini
@@ -11,6 +12,7 @@ from manga_dosei.tools.resize_assets import resize_assets
 
 __all__ = [
     "collect_assets_tool",
+    "define_layout_tool",
     "enrich_news_tool",
     "fetch_dosei_tool",
     "generate_page_gemini",

@@ -38,6 +38,7 @@ STEPS: list[_Step] = [
     ("generate_scenario", {}),
     ("collect_assets", {}),
     ("resize_assets", {}),
+    ("define_layout", {}),
     *_page_steps("generate_page_gemini", GEMINI_PAGE_VARIANT_COUNT),
     *_page_steps("generate_page_gpt", GPT_PAGE_VARIANT_COUNT),
 ]
