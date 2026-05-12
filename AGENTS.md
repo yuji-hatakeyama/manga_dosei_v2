@@ -19,7 +19,8 @@ Dependencies are managed by `uv` and the package is installed as a console scrip
 # install / sync deps (creates .venv, installs the manga_dosei script)
 uv sync
 
-# run the full daily pipeline (sequential 10 steps)
+# run the full daily pipeline (sequence assembled in run_daily.STEPS;
+# expands page-generation steps from each tool's PAGE_VARIANT_COUNT)
 uv run manga_dosei YYYYMMDD            # e.g. 20260101
 
 # interactive ADK web UI against root_agent (manga_dosei/agent.py)
@@ -53,6 +54,8 @@ Ruff config lives in `pyproject.toml` (`[tool.ruff]` / `[tool.ruff.lint]`). Ther
 - `GEMINI_API_KEY` — Gemini text + image generation
 - `GEMINI_TEXT_MODEL` (default `gemini-3.1-pro-preview`) — overrides `DEFAULT_TEXT_MODEL`
 - `GEMINI_IMAGE_MODEL` (default `gemini-3-pro-image-preview`) — used by `generate_page_gemini`
+- `OPENAI_API_KEY` — OpenAI Images API (`generate_page_gpt`)
+- `OPENAI_IMAGE_MODEL` (default `gpt-image-2`) — used by `generate_page_gpt`
 - `TAVILY_API_KEY` — required at import time of any tool that uses `build_tavily_toolset` (`fetch_dosei`, `enrich_news`)
 - `WIKIMEDIA_CONTACT_EMAIL` — appended to the User-Agent for Wikimedia API calls (rate-limit etiquette)
 
@@ -64,12 +67,12 @@ Ruff config lives in `pyproject.toml` (`[tool.ruff]` / `[tool.ruff.lint]`). Ther
 
 Generates a one-page A4 manga summarizing the Japanese Prime Minister's daily schedule (`首相動静`, "shushou dōsei"). Each daily run produces, under the session for that `target_date`:
 
-1. `dosei.md` — raw schedule article from jiji.com
+1. `dosei.md` — raw schedule article from JIJI.COM (www.jiji.com)
 2. `news.md` — schedule + enriched background research
 3. `scenario.md` — manga script (panel-by-panel, 4–5 panels per page)
 4. `assets/<name>.<ext>` + `manifests/assets.json` — Wikipedia reference images for characters/places
 5. `assets/<name>.<ext>` resized to ≤1024px long side (new artifact versions, originals kept)
-6. `pages/page_1.png` … `pages/page_5.png` — **five independent generation attempts of the same one-page manga**. The CLI calls `generate_page_gemini` with `page_number=1..5` to produce variants for quality (best is picked manually); the output is *not* a 5-page comic.
+6. `pages/<model>_<N>.<ext>` (e.g. `pages/gemini_1.jpg`, `pages/gpt_2.png`) — **independent generation attempts of the same one-page manga**, one set per image-generation backend. Each `generate_page_*` tool exposes a `PAGE_VARIANT_COUNT` constant and is called with `page_number=1..PAGE_VARIANT_COUNT` (currently gemini=5, gpt=2; counts vary because per-call quality/spread differs by model). The output is *not* a multi-page comic — best variant is picked manually.
 
 ### Two ways to drive the workflow
 
@@ -98,18 +101,18 @@ Two exceptions that intentionally do not follow this template:
 Several deliberate choices exist purely to prevent agent context blowup — do not undo them without thinking:
 
 - **`tavily_extract` is wrapped in a `summarize_url` AgentTool** (see `enrich_news.py`). Calling `tavily_extract` directly leaks `raw_content` (full page text) into the parent agent's history and exceeded the 1M-token context. The `AgentTool` runs the extract in a child session (InMemorySessionService), so only the summary returns to the parent.
-- **`build_tavily_toolset(tool_filter=["tavily_search"])`** in `fetch_dosei` deliberately omits `tavily_extract` for the same reason. `fetch_url` (HTML → boilerplate-stripped visible text, capped to 12k chars) is used instead when the agent actually needs a page body — this is also why `fetch_url` exists at all: Tavily's markdown conversion strips `<time datetime>` and similar semantic tags that jiji.com requires for the `配信日時` line.
-- **`generate_page_gemini` has no internal retry** and is called once per `page_number` (1..5) by the CLI. Adding internal retry there would mean the CLI's outer retry runs it twice on each failure — preserve "internal retry XOR CLI retry" via `RETRY_EXEMPT` in `run_daily.py`.
+- **`build_tavily_toolset(tool_filter=["tavily_search"])`** in `fetch_dosei` deliberately omits `tavily_extract` for the same reason. `fetch_url` (HTML → boilerplate-stripped visible text, capped to 12k chars) is used instead when the agent actually needs a page body — this is also why `fetch_url` exists at all: Tavily's markdown conversion strips `<time datetime>` and similar semantic tags that JIJI.COM (www.jiji.com) requires for the `配信日時` line.
+- **`generate_page_gemini` / `generate_page_gpt` have no internal retry** and are called once per `page_number` by the CLI (count comes from each tool's `PAGE_VARIANT_COUNT`). Adding internal retry there would mean the CLI's outer retry runs them twice on each failure — preserve "internal retry XOR CLI retry" via `RETRY_EXEMPT` in `run_daily.py`.
 
 ### Storage layout
 
 - `.adk/sessions.db` — `DatabaseSessionService` SQLite store. One session per `target_date` (`session_id == target_date`, `user_id == "daily"`, `app_name == "manga_dosei"`).
 - `.adk/artifacts/` — `FileArtifactService` root. Files within are versioned (each `save_artifact` produces a new version; old ones are kept).
 - `.adk/` is gitignored except for `.gitkeep`.
-- `assets/samples/` (in repo, not under `.adk/`) holds the two **reference images** baked into `generate_page_gemini`'s prompt: `sample.jpg` (page-layout exemplar) and `sanae.jpg` (Takaichi Sanae character ref). Replacing or renaming these silently changes generated output.
+- `assets/samples/` (in repo, not under `.adk/`) holds the two **reference images** baked into both `generate_page_gemini` and `generate_page_gpt`: `sample.jpg` (page-layout exemplar) and `sanae.jpg` (Takaichi Sanae character ref). Replacing or renaming these silently changes generated output.
 
 ### Conventions specific to this repo
 
 - All tool docstrings are in 日本語 and are part of the contract — the parent agent reads them via the ADK `Tool` abstraction. When changing tool behavior, update the docstring's 前提 / 引数 / 返り値 sections too.
 - `state["temp:..."]` keys are scratch (not persisted across invocations); non-`temp:` keys persist in the session DB. Use `temp:` for anything you only need within a single agent run.
-- Artifact names are stable contracts between steps (`dosei.md`, `news.md`, `scenario.md`, `manifests/assets.json`, `assets/<name>.<ext>`, `pages/page_NN.png`). Renaming one requires updating every downstream `required_artifacts` tuple and `load_prior` map.
+- Artifact names are stable contracts between steps (`dosei.md`, `news.md`, `scenario.md`, `manifests/assets.json`, `assets/<name>.<ext>`, `pages/<model>_<N>.<ext>`). Renaming one requires updating every downstream `required_artifacts` tuple and `load_prior` map.

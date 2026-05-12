@@ -12,11 +12,11 @@
 
 `manga_dosei` は ADK を使ったワークフローで、対象日の首相の予定を 1 ページの漫画にまとめます。処理の流れ:
 
-1. jiji.com から対象日の `首相動静` を取得
+1. JIJI.COM (www.jiji.com) から対象日の `首相動静` を取得
 2. Tavily で関連ニュースを調査して肉付け
 3. 漫画台本を生成
 4. 登場人物・場所の参考画像を Wikimedia Commons から収集
-5. 参考画像をリサイズし、Gemini Image で漫画ページを生成
+5. 参考画像をリサイズし、Gemini Image と OpenAI GPT Image の複数バックエンドで漫画ページを生成（バリアントから選ぶ）
 
 ## 使用技術
 
@@ -24,19 +24,19 @@
 - **ツール / ライブラリ**: uv, httpx, BeautifulSoup, Pillow ほか
 - **フレームワーク**: [Google ADK](https://github.com/google/adk-python)
 - **LLM (text)**: Gemini (デフォルト `gemini-3.1-pro-preview`)
-- **LLM (image)**: Gemini Image (デフォルト `gemini-3-pro-image-preview`)
+- **LLM (image)**: Gemini Image (デフォルト `gemini-3-pro-image-preview`) と OpenAI GPT Image (デフォルト `gpt-image-2`)
 - **Web 検索 (MCP)**: [Tavily](https://docs.tavily.com/)
-- **データソース**: jiji.com、Wikimedia Commons
+- **データソース**: JIJI.COM (www.jiji.com)、Wikimedia Commons
 
 ## 必要環境
 
-Gemini と Tavily の API キー (`.env.example` 参照)。
+Gemini、OpenAI、Tavily の API キー (`.env.example` 参照)。
 
 ## セットアップ
 
 ```bash
 uv sync
-cp .env.example .env   # GEMINI_API_KEY, TAVILY_API_KEY, WIKIMEDIA_CONTACT_EMAIL を記入
+cp .env.example .env   # GEMINI_API_KEY, OPENAI_API_KEY, TAVILY_API_KEY, WIKIMEDIA_CONTACT_EMAIL を記入
 ```
 
 ## 使い方

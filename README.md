@@ -12,11 +12,11 @@ A daily pipeline that turns the Japanese Prime Minister's published schedule (`�
 
 `manga_dosei` is an ADK workflow that summarizes the Prime Minister's agenda for a given date as a one-page manga. The pipeline:
 
-1. Fetches the day's `首相動静` article from jiji.com.
+1. Fetches the day's `首相動静` article from JIJI.COM (www.jiji.com).
 2. Enriches it with background research (Tavily web search).
 3. Drafts a manga script.
 4. Collects character / location reference images from Wikimedia Commons.
-5. Resizes the references and generates the final manga page with Gemini Image.
+5. Resizes the references and generates the final manga page with multiple backends (Gemini Image and OpenAI GPT Image), producing several variants to pick from.
 
 ## Tech stack
 
@@ -24,19 +24,19 @@ A daily pipeline that turns the Japanese Prime Minister's published schedule (`�
 - **Tooling**: uv, httpx, BeautifulSoup, Pillow, ...
 - **Framework**: [Google ADK](https://github.com/google/adk-python)
 - **LLM (text)**: Gemini (`gemini-3.1-pro-preview` by default)
-- **LLM (image)**: Gemini Image (`gemini-3-pro-image-preview` by default)
+- **LLM (image)**: Gemini Image (`gemini-3-pro-image-preview` by default) and OpenAI GPT Image (`gpt-image-2` by default)
 - **Web search (MCP)**: [Tavily](https://docs.tavily.com/)
-- **Data sources**: jiji.com, Wikimedia Commons
+- **Data sources**: JIJI.COM (www.jiji.com), Wikimedia Commons
 
 ## Requirements
 
-API keys for Gemini and Tavily (see `.env.example`).
+API keys for Gemini, OpenAI, and Tavily (see `.env.example`).
 
 ## Setup
 
 ```bash
 uv sync
-cp .env.example .env   # then fill in GEMINI_API_KEY, TAVILY_API_KEY, WIKIMEDIA_CONTACT_EMAIL
+cp .env.example .env   # then fill in GEMINI_API_KEY, OPENAI_API_KEY, TAVILY_API_KEY, WIKIMEDIA_CONTACT_EMAIL
 ```
 
 ## Usage
