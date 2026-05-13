@@ -1,8 +1,6 @@
 """fetch_dosei: 対象日の JIJI.COM (www.jiji.com) 首相動静を取得して
 dosei.md を保存する。"""
 
-from datetime import date, timedelta
-
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.readonly_context import ReadonlyContext
@@ -17,9 +15,30 @@ from manga_dosei.tools._common import (
     save_step_output,
 )
 from manga_dosei.tools._fetch_url import fetch_url
-from manga_dosei.tools._tavily import build_tavily_toolset
+from manga_dosei.tools._tavily import (
+    make_tavily_search_tool,
+    start_date_offset_from_target,
+)
 
 _fetch_url_tool = FunctionTool(func=fetch_url)
+
+# JIJI.COM の首相動静記事だけを狙う。検索パラメータはコード側で固定し、
+# LLM には query (検索語) しか渡させない。start_date は対象日の 2 日前で、
+# Tavily の index ラグ対策（end_date は付けない）。
+_search_jiji_for_dosei = make_tavily_search_tool(
+    name="search_jiji_for_dosei",
+    description=(
+        "JIJI.COM (www.jiji.com) の首相動静記事を Tavily で検索するツール。"
+        "topic=news / search_depth=advanced / max_results=20 / "
+        "include_domains=['www.jiji.com'] / start_date=(対象日の 2 日前) は"
+        "コード側で固定されている。引数は query (検索語) のみ。"
+    ),
+    topic="news",
+    search_depth="advanced",
+    max_results=20,
+    include_domains=["www.jiji.com"],
+    start_date=start_date_offset_from_target(days_before=2),
+)
 
 
 _STEP = "fetch_dosei"
@@ -44,24 +63,16 @@ def _build_prompt(target_date: str) -> str:
     day = int(target_date[6:8])
     date_jp = f"{year}年{month}月{day}日"
     iso = f"{year}-{month:02d}-{day:02d}"
-
-    target = date(int(year), month, day)
-    start_iso = (target - timedelta(days=2)).isoformat()
     return f"""
 {target_date} (YYYYMMDD形式 = {date_jp}、配信日ではなく対象日, ISO {iso})
 の首相動静を JIJI.COM (www.jiji.com) から取得してください。
 
 取得手順:
-1. `tavily_search` で対象日の首相動静記事を検索する。
-   **必須パラメータ** (毎回必ず付ける):
-   - `query`: 「首相動静 {date_jp}」
-   - `topic="news"` — ニュース専用 index を使う（古い記事のノイズを減らす）
-   - `search_depth="advanced"` — 取りこぼし対策に深い検索を使う
-   - `max_results=20` — Tavily の上限。候補を取りこぼさないため最大値
-   - `include_domains=["www.jiji.com"]` — JIJI.COM 以外の検索結果を除外する
-     (サブドメイン厳密照合のため `jiji.com` ではなく `www.jiji.com`)
-   - `start_date="{start_iso}"` — 対象日の 2 日前以降に配信された記事に絞る
-     （Tavily の index ラグ対策）。`end_date` は指定しない
+1. `search_jiji_for_dosei` で対象日の首相動静記事を検索する。
+   引数は `query` のみ（topic / search_depth / max_results /
+   include_domains=["www.jiji.com"] / start_date=対象日の2日前 は
+   ツール側で固定されている）。
+   `query` は「首相動静 {date_jp}」のように対象日を含む語にする。
 2. 検索結果から JIJI.COM の記事 URL
    (例: `https://www.jiji.com/jc/article?...`) を 1 つ選び、
    `fetch_url` でその URL の本文を取得する。
@@ -129,7 +140,7 @@ _agent = LlmAgent(
     output_schema=StepOutput,
     output_key=_OUTPUT_KEY,
     tools=[
-        build_tavily_toolset(tool_filter=["tavily_search"]),
+        _search_jiji_for_dosei,
         _fetch_url_tool,
     ],
     before_agent_callback=_before,

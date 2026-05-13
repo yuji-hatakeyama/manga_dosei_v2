@@ -9,7 +9,6 @@ adk-samples/python/agents/deep-search の構造を踏襲。
 """
 
 from collections.abc import AsyncGenerator
-from datetime import date, timedelta
 from typing import Literal
 
 from google.adk.agents import BaseAgent, LlmAgent, LoopAgent, SequentialAgent
@@ -29,33 +28,45 @@ from manga_dosei.tools._common import (
     save_step_output,
 )
 from manga_dosei.tools._fetch_url import fetch_url
-from manga_dosei.tools._tavily import build_tavily_toolset
+from manga_dosei.tools._tavily import (
+    end_date_offset_from_target,
+    make_tavily_search_tool,
+)
 
 _fetch_url_tool = FunctionTool(func=fetch_url)
 
+# Tavily Search を 2 種類のドメイン固定 tool としてコード側で量産する。
+# どちらも `end_date=対象日の翌日` で後日報道を index 段階で除外する。
+# LLM は query (検索語) だけ決めればよく、topic / depth / domain / 日付範囲は
+# プロンプトで揺らがない。
 
-def _tavily_params_block(target_date: str) -> str:
-    """section_researcher / enhanced_searcher 共通の `tavily_search` 指針。
+_search_news_jiji = make_tavily_search_tool(
+    name="search_news_jiji",
+    description=(
+        "JIJI.COM (www.jiji.com) のニュース記事を Tavily で検索するツール。"
+        "ニュース系の取材 ([SCOOP] / [MEETINGS] / [BACKGROUND] / follow-up) に使う。"
+        "topic=news / max_results=20 / include_domains=['www.jiji.com'] / "
+        "end_date=対象日の翌日 はコード側で固定。引数は query (検索語) のみ。"
+    ),
+    topic="news",
+    max_results=20,
+    include_domains=["www.jiji.com"],
+    end_date=end_date_offset_from_target(days_after=1),
+)
 
-    対象日翌日までを `end_date` にして、未来の後追い情報を index 段階で除外する。
-    """
-    y, m, d = int(target_date[:4]), int(target_date[4:6]), int(target_date[6:8])
-    end_iso = (date(y, m, d) + timedelta(days=1)).isoformat()
-    return f"""\
-# `tavily_search` パラメータ指針 (毎回必ず付ける)
-
-クエリの種類で `include_domains` を切り替える。それ以外は両者共通:
-
-- `topic="news"`
-- `max_results=20`
-- `end_date="{end_iso}"` — 対象日の翌日まで。未来の後追い情報を含めない
-
-## ニュース系クエリ ([SCOOP] / [MEETINGS] / [BACKGROUND] / follow-up)
-- `include_domains=["www.jiji.com"]`
-
-## 人物背景クエリ ([PEOPLE])
-- `include_domains=["news.yahoo.co.jp"]`
-"""
+_search_news_yahoo = make_tavily_search_tool(
+    name="search_news_yahoo",
+    description=(
+        "Yahoo!ニュース (news.yahoo.co.jp) を Tavily で検索するツール。"
+        "人物背景・経歴・発言 ([PEOPLE]) の取材に使う。"
+        "topic=news / max_results=20 / include_domains=['news.yahoo.co.jp'] / "
+        "end_date=対象日の翌日 はコード側で固定。引数は query (検索語) のみ。"
+    ),
+    topic="news",
+    max_results=20,
+    include_domains=["news.yahoo.co.jp"],
+    end_date=end_date_offset_from_target(days_after=1),
+)
 
 
 # --- summarize_url sub-agent (AgentTool) ---
@@ -146,11 +157,13 @@ summarize_url_tool = AgentTool(agent=_summarizer)
 def _build_research_tools() -> list:
     """section_researcher / enhanced_search_executor で使う共通ツールセット。
 
-    - tavily_search: URL 探索 (snippet レベルで context-safe)
+    - search_news_jiji: JIJI.COM のニュース検索 (snippet レベルで context-safe)
+    - search_news_yahoo: Yahoo!ニュース検索 (人物背景用)
     - summarize_url_tool: 重要 URL を深掘りするときに要約のみ返す
     """
     return [
-        build_tavily_toolset(tool_filter=["tavily_search"]),
+        _search_news_jiji,
+        _search_news_yahoo,
         summarize_url_tool,
     ]
 
@@ -222,13 +235,22 @@ class EscalationChecker(BaseAgent):
 def _section_researcher_instruction(context: ReadonlyContext) -> str:
     target_date = context.state.get("temp:target_date", "")
     dosei_text = context.state.get("temp:dosei_text", "")
-    tavily_params = _tavily_params_block(target_date)
     return f"""\
 あなたは「漫画台本作家のための取材リサーチャー」です。
 下記「対象の首相動静」を題材に、
 後段の漫画台本生成エージェントが 5 コマ漫画を書けるように、ニュース材料を集めてください。
 
-{tavily_params}
+# 利用可能な検索ツール
+
+検索パラメータ (topic / search_depth / max_results / include_domains / 日付範囲) は
+ツール側でコードによって固定されている。`query` (検索語) のみ渡す。
+
+- `search_news_jiji`: JIJI.COM (www.jiji.com) のニュース検索。
+  [SCOOP] / [MEETINGS] / [BACKGROUND] / follow-up に使う。
+- `search_news_yahoo`: Yahoo!ニュース (news.yahoo.co.jp) の検索。
+  [PEOPLE] (人物背景) に使う。
+- `summarize_url`: 重要 URL の本文を focus 観点で要約取得。
+  生本文ではなく要約しか返らないので何度呼んでも context-safe。
 
 # あなたの役割: 素材を均等に提供する取材役
 
@@ -274,7 +296,7 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 例: 「『僕が作った』とコロン香る市川局長」
 「トゥンクトゥンクお気に入りの高市首相」
 
-`tavily_search` で www.jiji.com を当たり、
+`search_news_jiji` で当たり、
 ピンと来た URL は `summarize_url` で深掘り。
 1-2 行の紹介で終わらせず、**直接 quote と背景** をセットで取れ。
 
@@ -287,7 +309,7 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 - **最近の直接発言** を 1-2 個 verbatim で
 - **人間味要素** (口癖・趣味・持病・対立関係・特徴的エピソード) があれば
 
-`tavily_search` + `summarize_url` で news.yahoo.co.jp の関連記事を当たる。
+`search_news_yahoo` + `summarize_url` で関連記事を当たる。
 
 ## [MEETINGS] 各面会・会議の詳細
 
@@ -299,7 +321,7 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 対象日 ({target_date}) の前日・翌日も含む同時期の動向。
 当日のニュースの伏線・背景になるもの:
-- `tavily_search` を 5-8 回、多角的なキーワードで
+- `search_news_jiji` を 5-8 回、多角的なキーワードで
 - 重要そうな関連報道は `summarize_url` で深掘り
 
 ---
@@ -320,7 +342,7 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 # CRITICAL RULES
 
-- 利用可能なツールは `tavily_search` と `summarize_url` のみ
+- 利用可能なツールは `search_news_jiji` / `search_news_yahoo` / `summarize_url` のみ
 - `summarize_url` は **30-50 回まで** 使ってよい。深掘り優先
 - **配信日が対象日 {target_date} 当日またはそれ以前** の記事のみ使用
 - **配信日が確認できない記事、後日報道は絶対に使用しない**
@@ -481,13 +503,20 @@ def _enhanced_search_instruction(context: ReadonlyContext) -> str:
         "\n".join(f"- {q.get('search_query', '')}" for q in follow_up_queries if q)
         or "(なし)"
     )
-    tavily_params = _tavily_params_block(target_date)
     return f"""\
 あなたは漫画台本のための取材リサーチャーで、
 前回 findings は漫画編集者に **'fail'** と評価されました。
 「漫画化に効くネタ・直接発言・人間味」を補強してください。
 
-{tavily_params}
+# 利用可能な検索ツール
+
+検索パラメータはツール側でコード固定 (`query` だけ渡す):
+
+- `search_news_jiji`: JIJI.COM (www.jiji.com) のニュース検索。
+  ニュース系 ([SCOOP] / [MEETINGS] / [BACKGROUND] / follow-up) はこちら。
+- `search_news_yahoo`: Yahoo!ニュース (news.yahoo.co.jp) の検索。
+  人物背景 ([PEOPLE]) はこちら。
+- `summarize_url`: 重要 URL の本文を focus 観点で要約取得。
 
 対象日: {target_date}
 
@@ -500,8 +529,11 @@ def _enhanced_search_instruction(context: ReadonlyContext) -> str:
 
 # 手順
 
-1. 上記 follow_up_queries の **EVERY query** を `tavily_search` で実行
-   （一つも省略しない）
+1. 上記 follow_up_queries の **EVERY query** を、
+   クエリの内容に応じて `search_news_jiji` または `search_news_yahoo` で実行
+   （一つも省略しない）。
+   人物背景系のクエリは `search_news_yahoo`、それ以外のニュース系は
+   `search_news_jiji` を選ぶ。
 2. 候補 URL のうちネタになりそうなものを `summarize_url` で要約取得
    （focus には「直接発言」「人間味エピソード」「対立・批判発言」など
    漫画化に効く観点を書く）
