@@ -56,7 +56,9 @@ To inspect or resume a session interactively via the ADK Web UI, pointing it at 
 
 ```bash
 uv run adk web \
-  --session_service_uri='sqlite:///./.adk/sessions.db' \
-  --artifact_service_uri='file://./.adk/artifacts' \
+  --session_service_uri="sqlite:///$(pwd)/.adk/sessions.db" \
+  --artifact_service_uri="file://$(pwd)/.adk/artifacts" \
   .
 ```
+
+Run this from the repository root so `$(pwd)` resolves to the same directory the CLI writes into. Absolute paths are required: `file://./...` is parsed with `.` as a host name and rejected ("file:// artifact URIs must reference the local filesystem").

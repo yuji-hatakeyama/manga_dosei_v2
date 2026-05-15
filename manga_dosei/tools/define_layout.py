@@ -1,10 +1,17 @@
-"""define_layout: scenario.md から漫画ページの layout.md を生成する。
+"""define_layout: scenario.md からレイアウトパターンを選び layout.md を生成する。
 
-画像生成 (generate_page_gemini / generate_page_gpt) の前段で実行され、
-シナリオを構造化したレイアウト指示書 (`layout.md`) を出力する。
-画像生成側はこの layout.md をそのままプロンプトに埋め込んで使うことで、
-シナリオ書式変動への耐性を確保する。
+レイアウトカタログ (`assets/layouts/<id>/`) には id ごとに ASCII 図・段ごとの
+配置・参考画像 (sample.jpg) が用意されている。本ツールはコマ数と台本の展開を
+見て、カタログから 1 つの pattern_id を選び、その正準 ASCII + 段配置を
+layout.md に転記したうえで、コマ別のキャラ配置と描画前チェックリストを
+組み立てる。
+
+layout.md にはコマタイトル・セリフ・視覚要素は書かない (compose_image_brief が
+scenario.md から直接転記する責務)。
 """
+
+import json
+from pathlib import Path
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
@@ -24,26 +31,85 @@ _ARTIFACT = "layout.md"
 _OUTPUT_KEY = "temp:define_layout_output"
 _REQUIRED = ("scenario.md",)
 
+_LAYOUTS_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "layouts"
+
+
+def _load_catalog() -> dict[str, dict]:
+    """assets/layouts/<id>/{meta.json, ascii.txt} を読み込んでカタログ辞書を返す。"""
+    catalog: dict[str, dict] = {}
+    if not _LAYOUTS_DIR.is_dir():
+        raise FileNotFoundError(f"layout catalog directory not found: {_LAYOUTS_DIR}")
+    for entry in sorted(_LAYOUTS_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        meta_path = entry / "meta.json"
+        ascii_path = entry / "ascii.txt"
+        if not meta_path.exists() or not ascii_path.exists():
+            continue
+        meta = json.loads(meta_path.read_text())
+        catalog[meta["id"]] = {
+            "id": meta["id"],
+            "panels": meta["panels"],
+            "name": meta["name"],
+            "when_to_use": meta["when_to_use"],
+            "rows": meta["rows"],
+            "ascii": ascii_path.read_text().rstrip("\n"),
+        }
+    if not catalog:
+        raise FileNotFoundError(f"no valid layout patterns found under {_LAYOUTS_DIR}")
+    return catalog
+
+
+_CATALOG = _load_catalog()
+
+
+def _format_catalog_for_prompt() -> str:
+    """カタログを LLM プロンプト用に markdown フォーマットで整形する。"""
+    blocks: list[str] = []
+    for pattern_id, entry in _CATALOG.items():
+        rows_text = "\n".join(f"- {row}" for row in entry["rows"])
+        blocks.append(
+            f"### {pattern_id} — {entry['name']} (panels={entry['panels']})\n"
+            f"向き: {entry['when_to_use']}\n\n"
+            f"ASCII:\n```\n{entry['ascii']}\n```\n\n"
+            f"段ごとの配置:\n{rows_text}"
+        )
+    return "\n\n".join(blocks)
+
 
 _DESCRIPTION = """\
-scenario.md を読み、漫画ページの版下設計書 layout.md を artifact として
-保存するツール。
+scenario.md を読み、レイアウトカタログから pattern_id を 1 つ選び、その
+正準 ASCII + 段配置 + 台本に応じたキャラ配置を含む layout.md を artifact
+として保存するツール。
 
-前提: scenario.md が存在すること。
+前提: scenario.md が存在すること。assets/layouts/ にパターンカタログが
+存在すること。
 引数: target_date は YYYYMMDD 形式の対象日。
 
-layout.md は後段の画像生成 (generate_page_gemini / generate_page_gpt) が
-そのままプロンプトに貼り付けて使う設計指示書。読み順・コマ別の発言者配置・
-吹き出し順・視覚要素を構造化 markdown で記述する。
+layout.md は **版下構造のみ** を含む (コマタイトル・セリフ・視覚要素は
+書かない)。先頭に `pattern_id: <id>` を必ず記載し、後段の compose_image_brief
+は同 ID を image_brief.md に伝搬する。
 """
 
 
 def _build_prompt(scenario_text: str, target_date: str) -> str:
+    catalog_block = _format_catalog_for_prompt()
     return f"""\
-あなたは漫画版下デザイナーです。下記「対象の台本」から、
-画像生成 AI に渡す版下設計書 (`layout.md`) を作成してください。
+あなたは漫画版下デザイナーです。下記「対象の台本」のコマ数と展開を見て、
+**レイアウトカタログから pattern_id を 1 つ選び**、その正準 ASCII と段配置を
+転記したうえで、コマ別のキャラ配置と描画前チェックリストを書いてください。
+
+コマタイトル・セリフ・視覚要素は layout.md に書きません (後段の
+compose_image_brief が scenario.md から直接拾います)。
 
 対象日: {target_date}
+
+# レイアウトパターン カタログ
+
+下記から、台本のコマ数 (panels) と展開に最適な **pattern_id を 1 つ** 選択。
+台本のコマ数と一致する panels のパターンしか選んではいけない。
+
+{catalog_block}
 
 # 出力フォーマット (厳守)
 
@@ -51,52 +117,29 @@ def _build_prompt(scenario_text: str, target_date: str) -> str:
 コードブロックでラップせず、markdown 本文として直接記載。
 
 ```
+- pattern_id: <選んだ ID>
+
 ## ページレイアウト
 
-(ASCII 図でページ全体の配置を視覚化。日本の漫画は右→左、上→下に読むので、
-コマ①が右上、最後のコマが左下に来るよう配置すること)
-
-```
-+--------+--------+
-|   ②   |   ①   |   ← 段 1 (右に①, 左に②)
-+--------+--------+
-|       ③       |   ← 段 2 (③ 全幅)
-+--------+--------+
-|   ⑤   |   ④   |   ← 段 3 (右に④, 左に⑤)
-+--------+--------+
-```
+<選んだパターンの ASCII を一字一句そのまま転記 (```text のコードブロックで囲む)>
 
 ## 段ごとの配置
 
-- 段 1: 右側=①、左側=②
-- 段 2: ③ を全幅で配置
-- 段 3: 右側=④、左側=⑤
+<選んだパターンの「段ごとの配置」を一字一句そのまま転記>
 
-## コマ別仕様
+## コマ別配置
 
 ### コマ ① (例: 1 人のコマ)
-- タイトル: (台本のコマタイトルを正確に転記)
+- 位置: <段 N 右側 / 段 N 左側 / 段 N 全幅 のいずれか、選んだパターンの段配置と一致させる>
 - キャラ配置: A のみ（中央配置）
-- 吹き出し（右→左の読み順、台本のセリフ番号順）:
-  1. A「(セリフ本文を一字一句正確に転記)」
-- 視覚要素: (場所・小道具・背景の手がかり。台本のイラスト欄から抽出)
 
-### コマ ③ (例: 3 人のコマ)
-- タイトル: ...
+### コマ ③ (例: 3 人のコマ、全幅)
+- 位置: 段 2 全幅
 - キャラ配置: **画面左=A、中央=B、画面右=C**
-- 吹き出し（右→左の読み順、台本のセリフ番号順）:
-  1. C「...」
-  2. B「...」
-  3. A「...」
-- 視覚要素: ...
 
 ### コマ ④ (例: 2 人のコマ)
-- タイトル: ...
+- 位置: 段 3 右側
 - キャラ配置: **画面左=A、画面右=B**
-- 吹き出し（右→左の読み順、台本のセリフ番号順）:
-  1. B「...」
-  2. A「...」
-- 視覚要素: ...
 
 ## 🔴 描画前チェックリスト
 
@@ -107,22 +150,26 @@ def _build_prompt(scenario_text: str, target_date: str) -> str:
   画面右 = (発言順 #1)
 ```
 
-# レイアウト作成ルール
+# 版下構造のルール
 
-1. **コマの読み順** (日本式漫画):
+1. **pattern_id 選択**:
+   - 台本のコマ数と一致する panels のパターンのみ選択可能
+   - 複数候補がある場合は `when_to_use` の説明と台本の展開を見て最適な 1 つを選ぶ
+   - 選んだパターンの ASCII と「段ごとの配置」は **一字一句そのまま転記** すること
+     (カタログが正典)。創作・編集禁止
+
+2. **コマの読み順** (日本式漫画):
    - 右→左、上→下
    - コマ① は **必ずページ右上**、最後のコマは **必ずページ左下**
    - 段 (row) の中では右が先、左が後
+   - カタログの ASCII はこの読み順に従って設計済み
 
-2. **段の区切り方**:
-   - 台本のコマ数が 4 なら 2 段（段1: ①② / 段2: ③④）
-   - 5 なら 3 段（段1: ①② / 段2: ③ 全幅 / 段3: ④⑤）。
-     全幅コマは台本の中で **情報量が多い・複数登場人物のいるコマ** を選ぶ
-   - 6 なら 3 段（段1: ①② / 段2: ③④ / 段3: ⑤⑥）
-   - 3 以下なら縦に並べる
-   - 全幅にするコマは 1 つに絞る (複数の全幅コマは禁止)
+3. **コマ別配置の「位置」フィールド**:
+   - 各コマ仕様の先頭に必ず置く
+   - 選んだパターンの「段ごとの配置」と完全に一致する文字列を使う
+     (例: `段 1 右側` / `段 2 全幅` 等)
 
-3. **キャラ配置の表記（最重要）**:
+4. **キャラ配置の表記（最重要）**:
    - 「キャラ配置」フィールドは **必ず下記いずれかの形式** で出力する
      （矢印 `→` や `、` の連結ではなく、**画面位置=名前** の明示形式）:
      - 1 人なら: `<話者名> のみ（中央配置）`
@@ -133,33 +180,28 @@ def _build_prompt(scenario_text: str, target_date: str) -> str:
      （日本式漫画の読み順「右→左」と一致させる）
    - 並びの根拠は人物属性ではなく **セリフ順** とする
 
-4. **吹き出しの読み順**:
-   - 「吹き出し（右→左の読み順）」は **台本のセリフ番号順** で記載
-   - 番号は台本そのまま (1, 2, 3...)
-
-5. **視覚要素**:
-   - 台本の「イラスト:」欄から場所・小道具・背景手がかりを 1〜2 行に要約
-   - 過剰に細かい指示は避ける（画像 AI の創造性に委ねる）
-
-6. **🔴 描画前チェックリスト (末尾必須)**:
-   - markdown 末尾に `## 🔴 描画前チェックリスト` セクションを置く。
+5. **🔴 描画前チェックリスト (末尾必須)**:
+   - markdown 末尾に `## 🔴 描画前チェックリスト` セクションを置く
    - 2 人以上のコマだけを以下の形式で列挙:
      `- コマ N: 画面左 = **<話者名>** ／ (中央 = <話者名> ／) 画面右 = <話者名>`
-   - 1 人だけのコマは含めない。
-   - 上の「キャラ配置」と完全に一致する内容で書く（再確認用ブロック）。
+   - 1 人だけのコマは含めない
+   - 上の「キャラ配置」と完全に一致する内容で書く（再確認用ブロック）
 
 # CRITICAL RULES
 
-- 台本のセリフは **一字一句正確に転記** すること。要約・改変禁止
 - 台本のコマ番号 (①②③...) をそのまま使うこと
-- 台本に書かれていない発言者・セリフ・コマを追加しないこと
-- セリフ番号と配置の整合（右端=#1、左端=#最後）を必ず保つこと
+- 台本に書かれていない発言者・コマを追加しないこと
+- コマタイトル / セリフ / 視覚要素 は **書かない** (compose_image_brief が
+  scenario.md から直接転記する責務)
+- 画面位置 (左右/中央) の根拠は台本のセリフ番号順
+- pattern_id は冒頭に `- pattern_id: <id>` の形で必ず記載する
 
 # 応答フォーマット (output_schema=StepOutput)
 
 - 正常に layout を作成できた場合:
   `body` に上記 markdown 全体、`error` は空文字
-- 台本が読めない・コマが識別できない場合: `body` は空文字、`error` に理由
+- 台本のコマ数に一致する pattern が無い・台本が読めない場合:
+  `body` は空文字、`error` に理由
 
 ---
 

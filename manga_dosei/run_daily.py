@@ -43,6 +43,7 @@ STEPS: list[_Step] = [
     ("collect_assets", {}),
     ("resize_assets", {}),
     ("define_layout", {}),
+    ("compose_image_brief", {}),
     *_page_steps("generate_page_gemini", GEMINI_PAGE_VARIANT_COUNT),
 ]
 

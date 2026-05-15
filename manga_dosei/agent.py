@@ -5,6 +5,7 @@ from google.adk.agents import Agent
 from manga_dosei import DEFAULT_TEXT_MODEL
 from manga_dosei.tools import (
     collect_assets_tool,
+    compose_image_brief_tool,
     define_layout_tool,
     enrich_news_tool,
     fetch_dosei_tool,
@@ -36,7 +37,8 @@ status=success を返していない限り、そのステップが完了した�
 4. collect_assets
 5. resize_assets
 6. define_layout
-7. generate_page_gemini と generate_page_gpt をそれぞれ規定回数呼ぶ
+7. compose_image_brief
+8. generate_page_gemini と generate_page_gpt をそれぞれ規定回数呼ぶ
 
 generate_page_gemini と generate_page_gpt は target_date (YYYYMMDD) と
 page_number の 2 引数を取り、1 回の呼び出しで 1 ページ分の画像を生成します。
@@ -69,6 +71,7 @@ PAGE_VARIANT_COUNT まで順番に呼んでください。
         collect_assets_tool,
         resize_assets,
         define_layout_tool,
+        compose_image_brief_tool,
         generate_page_gemini,
         generate_page_gpt,
     ],

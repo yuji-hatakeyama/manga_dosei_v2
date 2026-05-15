@@ -56,7 +56,9 @@ ADK Web UI から同じストレージを参照して状態を確認・再開す
 
 ```bash
 uv run adk web \
-  --session_service_uri='sqlite:///./.adk/sessions.db' \
-  --artifact_service_uri='file://./.adk/artifacts' \
+  --session_service_uri="sqlite:///$(pwd)/.adk/sessions.db" \
+  --artifact_service_uri="file://$(pwd)/.adk/artifacts" \
   .
 ```
+
+リポジトリのルートで実行してください (CLI が書く `.adk/` と同じディレクトリを `$(pwd)` で参照させるため)。絶対パスが必須です — `file://./...` の形式だと `.` が host として解釈されて「`file://` artifact URIs must reference the local filesystem.」で起動失敗します。
