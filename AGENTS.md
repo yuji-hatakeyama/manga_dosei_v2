@@ -55,9 +55,9 @@ Ruff config lives in `pyproject.toml` (`[tool.ruff]` / `[tool.ruff.lint]`). Ther
 
 - `GEMINI_API_KEY` — Gemini text + image generation
 - `GEMINI_TEXT_MODEL` (default `gemini-3.1-pro-preview`) — overrides `DEFAULT_TEXT_MODEL`
-- `GEMINI_IMAGE_MODEL` (default `gemini-3-pro-image-preview`) — used by `generate_page_gemini`
-- `OPENAI_API_KEY` — OpenAI Images API (`generate_page_gpt`)
-- `OPENAI_IMAGE_MODEL` (default `gpt-image-2`) — used by `generate_page_gpt`
+- `GEMINI_IMAGE_MODEL` (default `gemini-3-pro-image-preview`) — used by `generate_page_gemini` (`response_modalities=["IMAGE","TEXT"]`, `image_size="2K"`)
+- `OPENAI_API_KEY` — OpenAI **Images Edit** API (`client.images.edit`), used by `generate_page_gpt`. Edit endpoint (not Generate) because it takes multiple reference images (layout sample + character refs) as inline input.
+- `OPENAI_IMAGE_MODEL` (default `gpt-image-2`) — used by `generate_page_gpt` at `1024x1536` / `quality=high` / `output_format=png`
 - `TAVILY_API_KEY` — required at import time of any tool that uses `build_tavily_toolset` (`fetch_dosei`, `enrich_news`)
 - `WIKIMEDIA_CONTACT_EMAIL` — appended to the User-Agent for Wikimedia API calls (rate-limit etiquette)
 
@@ -98,14 +98,14 @@ Every workflow step in `manga_dosei/tools/` follows the same shape — internali
 Two exceptions that intentionally do not follow this template:
 
 - **`inspect_artifacts`** and **`resize_assets`** are plain `async` functions taking `ToolContext` (registered as raw `FunctionTool`s on `root_agent`). They do not produce text artifacts — they read state or rewrite binary artifacts in place — so they don't need the `LlmAgent` + `StepOutput` indirection.
-- **`enrich_news`** wraps a `SequentialAgent(researcher → LoopAgent(evaluator → escalation_checker → enhanced_searcher) → composer)` to do deep research before composing `news.md`. The same `prepare_step`/`save_step_output` callbacks attach at the outer `SequentialAgent` level. Mirror this pattern (rather than inventing a new one) if another step needs iterative research.
+- **`enrich_news`** wraps a `SequentialAgent(researcher → LoopAgent(evaluator → escalation_checker → enhanced_searcher) → composer)` to do deep research before composing `news.md`. `LoopAgent.max_iterations=2`; `EscalationChecker` is a plain `BaseAgent` that reads `state[_EVAL_KEY]` and only emits `actions.escalate=True` when `grade == "pass"` (LLM-driven exit_loop was prone to early exits). The same `prepare_step`/`save_step_output` callbacks attach at the outer `SequentialAgent` level. Mirror this pattern (rather than inventing a new one) if another step needs iterative research.
 
 ### Context-window discipline
 
 Several deliberate choices exist purely to prevent agent context blowup — do not undo them without thinking:
 
 - **Tavily Search is a code-parameterized `FunctionTool` factory, not the MCP server.** `manga_dosei/tools/_tavily.py::make_tavily_search_tool` produces `FunctionTool`s whose `topic` / `search_depth` / `max_results` / `include_domains` / date range are fixed at construction time; the LLM only ever supplies `query`. `start_date_offset_from_target` / `end_date_offset_from_target` resolve target-date-relative bounds from `state["temp:target_date"]` at call time. Call sites: `fetch_dosei` (`search_jiji_for_dosei`, `start_date = target − 2d`), `enrich_news` (`search_news_jiji` and `search_news_yahoo`, both `end_date = target + 1d`). Tavily's `extract` endpoint is **not** wrapped — only `search` — because raw page text is what blew up context in the MCP-era flow.
-- **Page-body retrieval goes through `summarize_url` (an AgentTool wrapping `fetch_url`), never raw extract.** `summarize_url` runs in a child `InMemorySessionService`, so only the focused summary returns to the parent researcher — the raw HTML/text stays in the child. `fetch_url` itself exists because Tavily's markdown conversion strips `<time datetime>` and similar semantic tags that JIJI.COM (www.jiji.com) needs for the `配信日時` line.
+- **Page-body retrieval goes through `summarize_url` (an AgentTool wrapping `fetch_url`), never raw extract.** `summarize_url` runs in a child `InMemorySessionService` (AgentTool's default), so only the focused summary returns to the parent researcher — the raw HTML/text stays in the child. `fetch_url` itself exists because Tavily's markdown conversion strips `<time datetime>` and similar semantic tags that JIJI.COM (www.jiji.com) needs for the `配信日時` line. `fetch_url` also defends downstream context by truncating the HTML download at 5MB and the cleaned-text body at 12,000 chars (BeautifulSoup-stripped, `article` → `main` → `body` preferred container).
 - **`generate_page_gemini` / `generate_page_gpt` have no internal retry** and are called once per `page_number` by the CLI (count comes from each tool's `PAGE_VARIANT_COUNT`). Adding internal retry there would mean the CLI's outer retry runs them twice on each failure — preserve "internal retry XOR CLI retry" via `RETRY_EXEMPT` in `run_daily.py`.
 
 ### Storage layout
@@ -113,11 +113,12 @@ Several deliberate choices exist purely to prevent agent context blowup — do n
 - `.adk/sessions.db` — `DatabaseSessionService` SQLite store. One session per `target_date` (`session_id == target_date`, `user_id == "daily"`, `app_name == "manga_dosei"`).
 - `.adk/artifacts/` — `FileArtifactService` root. Files within are versioned (each `save_artifact` produces a new version; old ones are kept).
 - `.adk/` is gitignored except for `.gitkeep`.
-- `assets/samples/sanae.jpg` (in repo) is the **Takaichi Sanae character reference** baked into both `generate_page_gemini` and `generate_page_gpt`. Renaming or replacing silently changes generated output. (`assets/samples/sample.jpg` is no longer used by the pipeline — kept only because the READMEs embed it as the output sample.)
+- `assets/samples/sanae.jpg` (in repo) is the **Takaichi Sanae character reference** baked into both `generate_page_gemini` and `generate_page_gpt`. Renaming or replacing silently changes generated output. `compose_image_brief` also has a hard-coded rule that injects 「高市早苗」 into the 登場人物プロフィール block (with `参照画像: あり (assets/samples/sanae.jpg)`) **even when she does not appear in `news.md`'s 主要人物プロフィール**, so the character reference is always wired up. (`assets/samples/sample.jpg` is no longer used by the pipeline — kept only because the READMEs embed it as the output sample.)
 - `assets/layouts/<pattern_id>/` is the **layout pattern catalog** consumed by `define_layout` and `generate_page_*`. Each pattern directory contains `meta.json` (id / panels / name / when_to_use / rows), `ascii.txt` (canonical ASCII figure), and `sample.jpg` (per-pattern reference image with the matching layout). Current patterns: `3a` (1-1-1), `4a` (2x2), `4b` (1-1-1-1), `4c` (1-1-2), `4d` (1-2-1), `5a` (2-1-2). Adding a pattern is "drop a new `<id>/` directory with these three files"; no code changes needed.
 
 ### Conventions specific to this repo
 
 - All tool docstrings are in 日本語 and are part of the contract — the parent agent reads them via the ADK `Tool` abstraction. When changing tool behavior, update the docstring's 前提 / 引数 / 返り値 sections too.
+- `manga_dosei/validation.py::validate_target_date` only checks the 8-digit format (`\d{8}`); it does not verify calendar validity. Callers that need a real date (`_tavily.py::_parse_target_date`) build a `date(...)` from the slices and rely on that for calendar errors.
 - `state["temp:..."]` keys are scratch (not persisted across invocations); non-`temp:` keys persist in the session DB. Use `temp:` for anything you only need within a single agent run.
 - Artifact names are stable contracts between steps (`dosei.md`, `news.md`, `scenario.md`, `manifests/assets.json`, `assets/<name>.<ext>`, `layout.md`, `image_brief.md`, `pages/<model>_<N>.<ext>`). Renaming one requires updating every downstream `required_artifacts` tuple and `load_prior` map. `generate_page_*` tools load `image_brief.md` directly via `tool_context.load_artifact` (not through `load_prior`) and paste it verbatim into the image-gen prompt — they do not load `scenario.md` or `layout.md` themselves.
