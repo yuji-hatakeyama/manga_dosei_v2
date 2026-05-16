@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import json
 import sys
@@ -65,14 +66,34 @@ RETRY_EXEMPT: set[str] = set()
 
 def main() -> None:
     load_dotenv(dotenv_path=Path(".env"), override=False)
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: manga_dosei YYYYMMDD")
-    target_date = sys.argv[1]
+    args = _parse_args()
+    target_date = args.target_date
     validate_target_date(target_date)
-    asyncio.run(_run(target_date))
+    publish_dir = Path(args.publish_dir) if args.publish_dir else None
+    asyncio.run(_run(target_date, publish_dir=publish_dir))
 
 
-async def _run(target_date: str) -> None:
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="manga_dosei",
+        description="Run the manga dosei daily content workflow.",
+    )
+    parser.add_argument("target_date", help="YYYYMMDD")
+    parser.add_argument(
+        "--publish-dir",
+        default=None,
+        help=(
+            "If set, after the pipeline completes, write the latest version "
+            "of every artifact in the session under this directory. "
+            "Artifact names retain their slash hierarchy "
+            "(e.g. pages/gemini_1.jpg lands at <publish-dir>/pages/gemini_1.jpg). "
+            "The directory is created if missing."
+        ),
+    )
+    return parser.parse_args()
+
+
+async def _run(target_date: str, *, publish_dir: Path | None) -> None:
     Path(".adk").mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -106,6 +127,55 @@ async def _run(target_date: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+    if publish_dir is not None:
+        await _dump_artifacts_to_dir(artifact_service, target_date, publish_dir)
+
+
+async def _dump_artifacts_to_dir(
+    artifact_service: FileArtifactService,
+    target_date: str,
+    publish_dir: Path,
+) -> None:
+    """セッション内の全 artifact (最新 version のみ) を `publish_dir` 配下に書き出す。
+
+    artifact 名のスラッシュ階層はそのまま保持し、衝突回避用の prefix も付けない。
+    例: `pages/gemini_1.jpg` は `<publish_dir>/pages/gemini_1.jpg` に書く。
+    バイナリ artifact (inline_data) は bytes をそのまま、テキスト artifact (text) は
+    UTF-8 でエンコードして書き出す。
+    """
+    publish_dir.mkdir(parents=True, exist_ok=True)
+    keys = await artifact_service.list_artifact_keys(
+        app_name=APP_NAME,
+        user_id=DEFAULT_USER_ID,
+        session_id=target_date,
+    )
+    written = 0
+    for name in sorted(keys):
+        part = await artifact_service.load_artifact(
+            app_name=APP_NAME,
+            user_id=DEFAULT_USER_ID,
+            session_id=target_date,
+            filename=name,
+        )
+        data = _extract_part_bytes(part)
+        if data is None:
+            continue
+        dest = publish_dir / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        written += 1
+    print(f"[publish_dir] wrote {written} artifact(s) under {publish_dir}")
+
+
+def _extract_part_bytes(part: types.Part | None) -> bytes | None:
+    if part is None:
+        return None
+    if part.inline_data is not None and part.inline_data.data:
+        return part.inline_data.data
+    if part.text is not None:
+        return part.text.encode("utf-8")
+    return None
 
 
 async def _ensure_session(
