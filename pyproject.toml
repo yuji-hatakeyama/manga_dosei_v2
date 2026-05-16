@@ -11,11 +11,13 @@ dependencies = [
     "greenlet>=3.3.0",
     "openai>=1.60.0",
     "pillow>=12.2.0",
+    "pygithub>=2.4.0",
     "python-dotenv>=1.2.1",
 ]
 
 [project.scripts]
 manga_dosei = "manga_dosei.run_daily:main"
+manga_dosei-publish = "manga_dosei.publish:main"
 
 [build-system]
 requires = ["hatchling"]
