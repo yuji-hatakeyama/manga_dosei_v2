@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import json
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -41,6 +42,8 @@ _DIRECT_TOOLS: dict[str, tuple[Any, bool]] = {
 SESSION_URI = "sqlite+aiosqlite:///./.adk/sessions.db"
 ARTIFACT_DIR = Path(".adk/artifacts")
 
+_SESSION_ID_PATTERN = re.compile(r"\d{8}(_.+)?")
+
 _Step = tuple[str, dict[str, object]]
 
 
@@ -68,9 +71,11 @@ def main() -> None:
     load_dotenv(dotenv_path=Path(".env"), override=False)
     args = _parse_args()
     target_date = args.target_date
+    session_id = args.session_id or target_date
     validate_target_date(target_date)
+    _validate_session_id(session_id, target_date)
     publish_dir = Path(args.publish_dir) if args.publish_dir else None
-    asyncio.run(_run(target_date, publish_dir=publish_dir))
+    asyncio.run(_run(target_date, session_id, publish_dir=publish_dir))
 
 
 def _parse_args() -> argparse.Namespace:
@@ -79,6 +84,15 @@ def _parse_args() -> argparse.Namespace:
         description="Run the manga dosei daily content workflow.",
     )
     parser.add_argument("target_date", help="YYYYMMDD")
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help=(
+            "ADK session id. Defaults to target_date. "
+            "Must match ^\\d{8}(_.+)?$ and start with target_date "
+            "(e.g. 20260315_retry)."
+        ),
+    )
     parser.add_argument(
         "--publish-dir",
         default=None,
@@ -93,13 +107,30 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _run(target_date: str, *, publish_dir: Path | None) -> None:
+def _validate_session_id(session_id: str, target_date: str) -> None:
+    if _SESSION_ID_PATTERN.fullmatch(session_id) is None:
+        raise SystemExit(
+            f"invalid --session-id={session_id!r}: must match ^\\d{{8}}(_.+)?$"
+        )
+    if session_id[:8] != target_date:
+        raise SystemExit(
+            f"invalid --session-id={session_id!r}: "
+            f"first 8 digits must equal target_date={target_date}"
+        )
+
+
+async def _run(
+    target_date: str,
+    session_id: str,
+    *,
+    publish_dir: Path | None,
+) -> None:
     Path(".adk").mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
     session_service = DatabaseSessionService(db_url=SESSION_URI)
     artifact_service = FileArtifactService(root_dir=str(ARTIFACT_DIR))
-    await _ensure_session(session_service, target_date)
+    await _ensure_session(session_service, target_date, session_id)
 
     runner = Runner(
         app_name=APP_NAME,
@@ -115,12 +146,13 @@ async def _run(target_date: str, *, publish_dir: Path | None) -> None:
             artifact_service,
             session_service,
             target_date,
+            session_id,
             tool_name,
             extra_args=extra_args,
             retry=retry,
         )
         if not success:
-            err = await _last_error(session_service, target_date)
+            err = await _last_error(session_service, session_id)
             label = _step_label(tool_name, extra_args)
             print(
                 f"[{label}] failed; aborting. last_error={err}",
@@ -129,12 +161,12 @@ async def _run(target_date: str, *, publish_dir: Path | None) -> None:
             sys.exit(1)
 
     if publish_dir is not None:
-        await _dump_artifacts_to_dir(artifact_service, target_date, publish_dir)
+        await _dump_artifacts_to_dir(artifact_service, session_id, publish_dir)
 
 
 async def _dump_artifacts_to_dir(
     artifact_service: FileArtifactService,
-    target_date: str,
+    session_id: str,
     publish_dir: Path,
 ) -> None:
     """セッション内の全 artifact (最新 version のみ) を `publish_dir` 配下に書き出す。
@@ -148,14 +180,14 @@ async def _dump_artifacts_to_dir(
     keys = await artifact_service.list_artifact_keys(
         app_name=APP_NAME,
         user_id=DEFAULT_USER_ID,
-        session_id=target_date,
+        session_id=session_id,
     )
     written = 0
     for name in sorted(keys):
         part = await artifact_service.load_artifact(
             app_name=APP_NAME,
             user_id=DEFAULT_USER_ID,
-            session_id=target_date,
+            session_id=session_id,
             filename=name,
         )
         data = _extract_part_bytes(part)
@@ -181,18 +213,19 @@ def _extract_part_bytes(part: types.Part | None) -> bytes | None:
 async def _ensure_session(
     session_service: DatabaseSessionService,
     target_date: str,
+    session_id: str,
 ) -> None:
     session = await session_service.get_session(
         app_name=APP_NAME,
         user_id=DEFAULT_USER_ID,
-        session_id=target_date,
+        session_id=session_id,
     )
     if session is not None:
         return
     await session_service.create_session(
         app_name=APP_NAME,
         user_id=DEFAULT_USER_ID,
-        session_id=target_date,
+        session_id=session_id,
         state={
             "target_date": target_date,
             "status": "initialized",
@@ -206,6 +239,7 @@ async def _run_step_with_retry(
     artifact_service: FileArtifactService,
     session_service: DatabaseSessionService,
     target_date: str,
+    session_id: str,
     tool_name: str,
     *,
     extra_args: dict[str, object],
@@ -221,6 +255,7 @@ async def _run_step_with_retry(
                     session_service,
                     artifact_service,
                     target_date,
+                    session_id,
                     tool_name,
                     attempt=attempt,
                 )
@@ -228,6 +263,7 @@ async def _run_step_with_retry(
                 await _run_step(
                     runner,
                     target_date,
+                    session_id,
                     tool_name,
                     extra_args=extra_args,
                     attempt=attempt,
@@ -238,8 +274,8 @@ async def _run_step_with_retry(
                 file=sys.stderr,
             )
             traceback.print_exc(file=sys.stderr)
-            await _record_error(session_service, target_date, tool_name, repr(error))
-        if not await _last_error(session_service, target_date):
+            await _record_error(session_service, session_id, tool_name, repr(error))
+        if not await _last_error(session_service, session_id):
             return True
         if attempt < attempts:
             print(
@@ -253,6 +289,7 @@ async def _run_step_direct(
     session_service: DatabaseSessionService,
     artifact_service: FileArtifactService,
     target_date: str,
+    session_id: str,
     tool_name: str,
     *,
     attempt: int,
@@ -268,12 +305,12 @@ async def _run_step_direct(
     session = await session_service.get_session(
         app_name=APP_NAME,
         user_id=DEFAULT_USER_ID,
-        session_id=target_date,
+        session_id=session_id,
     )
     if session is None:
-        raise RuntimeError(f"session {target_date} not found")
+        raise RuntimeError(f"session {session_id} not found")
 
-    invocation_id = f"cli-direct-{target_date}-{tool_name}-{attempt}"
+    invocation_id = f"cli-direct-{session_id}-{tool_name}-{attempt}"
     invocation_context = InvocationContext(
         session_service=session_service,
         artifact_service=artifact_service,
@@ -306,6 +343,7 @@ async def _run_step_direct(
 async def _run_step(
     runner: Runner,
     target_date: str,
+    session_id: str,
     tool_name: str,
     *,
     extra_args: dict[str, object],
@@ -317,7 +355,7 @@ async def _run_step(
     final_text = None
     async for event in runner.run_async(
         user_id=DEFAULT_USER_ID,
-        session_id=target_date,
+        session_id=session_id,
         new_message=message,
     ):
         if event.is_final_response() and event.content and event.content.parts:
@@ -354,12 +392,12 @@ def _step_label(tool_name: str, extra_args: dict[str, object]) -> str:
 
 async def _last_error(
     session_service: DatabaseSessionService,
-    target_date: str,
+    session_id: str,
 ) -> Any:
     session = await session_service.get_session(
         app_name=APP_NAME,
         user_id=DEFAULT_USER_ID,
-        session_id=target_date,
+        session_id=session_id,
     )
     if session is None:
         return None
@@ -368,7 +406,7 @@ async def _last_error(
 
 async def _record_error(
     session_service: DatabaseSessionService,
-    target_date: str,
+    session_id: str,
     step: str,
     message: str,
 ) -> None:
@@ -377,14 +415,14 @@ async def _record_error(
     session = await session_service.get_session(
         app_name=APP_NAME,
         user_id=DEFAULT_USER_ID,
-        session_id=target_date,
+        session_id=session_id,
     )
     if session is None:
         return
     await session_service.append_event(
         session,
         Event(
-            invocation_id=f"cli-error-{target_date}",
+            invocation_id=f"cli-error-{session_id}",
             author="run_daily",
             actions=EventActions(
                 state_delta={"last_error": {"step": step, "message": message}}
