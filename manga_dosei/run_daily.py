@@ -6,18 +6,29 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from google.adk.agents.invocation_context import InvocationContext
 from google.adk.artifacts import FileArtifactService
 from google.adk.events import Event, EventActions
 from google.adk.runners import Runner
 from google.adk.sessions import DatabaseSessionService
+from google.adk.tools import ToolContext
 from google.genai import types
 
 from manga_dosei import APP_NAME, DEFAULT_USER_ID
 from manga_dosei.agent import root_agent
+from manga_dosei.tools import inspect_artifacts, resize_assets
 from manga_dosei.tools.generate_page_gemini import (
     PAGE_VARIANT_COUNT as GEMINI_PAGE_VARIANT_COUNT,
 )
 from manga_dosei.validation import validate_target_date
+
+# LLM をスキップして CLI から直接呼ぶ決定的 tool。
+# LLM 経由ルート（adk web / interactive agent）は agent.py の
+# root_agent.tools 経由で従来通り動作する。
+_DIRECT_TOOLS: dict[str, tuple[Any, bool]] = {
+    "inspect_artifacts": (inspect_artifacts, True),  # bool: target_date を引数で取るか
+    "resize_assets": (resize_assets, True),
+}
 
 # NOTE: generate_page_gpt は ADK agent / web UI 経由では引き続き利用可能だが、
 # 日次 CLI では呼び出さない方針（配置・文字品質ともに Gemini の方が安定するため）。
@@ -80,6 +91,7 @@ async def _run(target_date: str) -> None:
         retry = tool_name not in RETRY_EXEMPT
         success = await _run_step_with_retry(
             runner,
+            artifact_service,
             session_service,
             target_date,
             tool_name,
@@ -121,6 +133,7 @@ async def _ensure_session(
 
 async def _run_step_with_retry(
     runner: Runner,
+    artifact_service: FileArtifactService,
     session_service: DatabaseSessionService,
     target_date: str,
     tool_name: str,
@@ -130,15 +143,25 @@ async def _run_step_with_retry(
 ) -> bool:
     attempts = 2 if retry else 1
     label = _step_label(tool_name, extra_args)
+    direct = tool_name in _DIRECT_TOOLS and not extra_args
     for attempt in range(1, attempts + 1):
         try:
-            await _run_step(
-                runner,
-                target_date,
-                tool_name,
-                extra_args=extra_args,
-                attempt=attempt,
-            )
+            if direct:
+                await _run_step_direct(
+                    session_service,
+                    artifact_service,
+                    target_date,
+                    tool_name,
+                    attempt=attempt,
+                )
+            else:
+                await _run_step(
+                    runner,
+                    target_date,
+                    tool_name,
+                    extra_args=extra_args,
+                    attempt=attempt,
+                )
         except Exception as error:
             print(
                 f"[{label}] (attempt {attempt}) unhandled error: {error!r}",
@@ -154,6 +177,60 @@ async def _run_step_with_retry(
                 file=sys.stderr,
             )
     return False
+
+
+async def _run_step_direct(
+    session_service: DatabaseSessionService,
+    artifact_service: FileArtifactService,
+    target_date: str,
+    tool_name: str,
+    *,
+    attempt: int,
+) -> None:
+    """LLM をスキップして決定的 tool を直接呼び、結果を session.state に永続化する。
+
+    各 tool は ToolContext.state 経由で `last_error` / `status` 等を書き換える。
+    これは `event_actions.state_delta` に溜まるので、最後に append_event で
+    session に commit する。こうしないと既存の retry 判定 (`_last_error`) が
+    変更を観測できない。
+    """
+    fn, needs_target_date = _DIRECT_TOOLS[tool_name]
+    session = await session_service.get_session(
+        app_name=APP_NAME,
+        user_id=DEFAULT_USER_ID,
+        session_id=target_date,
+    )
+    if session is None:
+        raise RuntimeError(f"session {target_date} not found")
+
+    invocation_id = f"cli-direct-{target_date}-{tool_name}-{attempt}"
+    invocation_context = InvocationContext(
+        session_service=session_service,
+        artifact_service=artifact_service,
+        invocation_id=invocation_id,
+        agent=root_agent,
+        session=session,
+    )
+    event_actions = EventActions()
+    tool_context = ToolContext(invocation_context, event_actions=event_actions)
+
+    if needs_target_date:
+        result = await fn(target_date, tool_context)
+    else:
+        result = await fn(tool_context)
+
+    await session_service.append_event(
+        session,
+        Event(
+            invocation_id=invocation_id,
+            author="run_daily",
+            actions=event_actions,
+        ),
+    )
+
+    label = _step_label(tool_name, {})
+    suffix = f" (attempt {attempt})" if attempt > 1 else ""
+    print(f"[{label}]{suffix} {json.dumps(result, ensure_ascii=False)}")
 
 
 async def _run_step(
