@@ -116,6 +116,31 @@ uv run manga_dosei 20260410
 
 Outputs (sessions and artifacts) are written under `.adk/`.
 
+### Dumping artifacts for archiving
+
+Pass `--publish-dir PATH` to also write the latest version of every artifact into a flat directory (slash hierarchy preserved):
+
+```bash
+uv run manga_dosei 20260410 --publish-dir /tmp/manga-out
+```
+
+### Pushing the dump to a GitHub archive repo
+
+`manga_dosei-publish` is a separate CLI that uploads a directory to a GitHub repo as one fast-forward commit, used for example to archive each daily run into a private repo:
+
+```bash
+GITHUB_OUTPUT_TOKEN=<fine-grained PAT> \
+uv run manga_dosei-publish \
+  --source /tmp/manga-out \
+  --repo owner/manga_dosei_v2_artifacts \
+  --dest 2026/04/20260410 \
+  --message "publish: 20260410"
+```
+
+The token is read only from `GITHUB_OUTPUT_TOKEN`; it is never accepted as a CLI flag.
+
+### Interactive session
+
 To inspect or resume a session interactively via the ADK Web UI, pointing it at the same storage:
 
 ```bash

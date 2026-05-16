@@ -21,7 +21,15 @@ uv sync
 
 # run the full daily pipeline (sequence assembled in run_daily.STEPS;
 # expands page-generation steps from each tool's PAGE_VARIANT_COUNT)
-uv run manga_dosei YYYYMMDD            # e.g. 20260101
+uv run manga_dosei YYYYMMDD                              # e.g. 20260101
+uv run manga_dosei YYYYMMDD --publish-dir /tmp/out       # also dump latest artifacts under /tmp/out
+
+# Push a previously-dumped directory to the private archive repo as one commit.
+# Standalone CLI — independent from the pipeline / LLM; token comes from env only.
+GITHUB_OUTPUT_TOKEN=... \
+uv run manga_dosei-publish \
+  --source /tmp/out --repo owner/archive \
+  --dest 2026/05/20260515 --message "publish: 20260515"
 
 # interactive ADK web UI against root_agent (manga_dosei/agent.py)
 # IMPORTANT: pass the same service URIs the CLI uses, otherwise adk web
@@ -63,6 +71,8 @@ Ruff config lives in `pyproject.toml` (`[tool.ruff]` / `[tool.ruff.lint]`). Ther
 
 `.env` is loaded with `override=False`, so values exported in the shell win.
 
+`manga_dosei-publish` (separate CLI) needs only `GITHUB_OUTPUT_TOKEN` (fine-grained PAT for the archive repo with `Contents: Read & Write`). Read from the environment only — not from `.env`, not from CLI args.
+
 ## Architecture
 
 ### What this app does
@@ -82,8 +92,10 @@ Generates a one-page A4 manga summarizing the Japanese Prime Minister's daily sc
 
 Both use the same `LlmAgent`s and the same `.adk/` storage; choose by use case:
 
-- **`manga_dosei/run_daily.py` (CLI)** — deterministic. The CLI ignores the `root_agent`'s instruction-driven flow and instead loops over a hard-coded `STEPS` list, building one prompt per step that says "call tool `X` exactly once with these args". The CLI sequence is `fetch_dosei → enrich_news → generate_scenario → collect_assets → resize_assets → define_layout → compose_image_brief → generate_page_gemini × PAGE_VARIANT_COUNT`. `generate_page_gpt` is intentionally **not** in `STEPS` (Gemini gives more reliable composition and text rendering); to re-enable it, follow the comment block above `STEPS` in `run_daily.py`. Each step retries once on error (`RETRY_EXEMPT` lets specific tools opt out of CLI retry when they have internal retry; currently empty). State is persisted to `sqlite+aiosqlite:///./.adk/sessions.db`; artifacts to `.adk/artifacts/`.
+- **`manga_dosei/run_daily.py` (CLI)** — deterministic. The CLI ignores the `root_agent`'s instruction-driven flow and instead loops over a hard-coded `STEPS` list, building one prompt per step that says "call tool `X` exactly once with these args". The CLI sequence is `fetch_dosei → enrich_news → generate_scenario → collect_assets → resize_assets → define_layout → compose_image_brief → generate_page_gemini × PAGE_VARIANT_COUNT`. `generate_page_gpt` is intentionally **not** in `STEPS` (Gemini gives more reliable composition and text rendering); to re-enable it, follow the comment block above `STEPS` in `run_daily.py`. `inspect_artifacts` and `resize_assets` are listed in `_DIRECT_TOOLS` and dispatched via `_run_step_direct` (no LLM round-trip) to save tokens / latency on those deterministic steps. Each step retries once on error (`RETRY_EXEMPT` lets specific tools opt out of CLI retry when they have internal retry; currently empty). State is persisted to `sqlite+aiosqlite:///./.adk/sessions.db`; artifacts to `.adk/artifacts/`. With `--publish-dir PATH`, after the pipeline finishes the latest version of every artifact is dumped under `PATH/` (slash hierarchy preserved, e.g. `pages/gemini_1.jpg` → `PATH/pages/gemini_1.jpg`); this is the input contract for `manga_dosei-publish`.
 - **`manga_dosei/agent.py` (`root_agent`)** — interactive. `instruction` tells the LLM to call `inspect_artifacts` first, then call exactly one upstream-most missing step per turn. The instruction's canonical order is `fetch_dosei → enrich_news → generate_scenario → collect_assets → resize_assets → define_layout → compose_image_brief → generate_page_gemini と generate_page_gpt をそれぞれ PAGE_VARIANT_COUNT 回`. Useful for `adk web`. **Do not change the workflow's canonical step order or the "one step per turn" rule** without project-owner approval — the same instruction also forbids changes to content-generating prompts (see `agent.py` "コンテンツ挙動の保全" section).
+
+Publishing is a **separate, non-LLM CLI** in `manga_dosei/publish.py`. It takes `--source` (typically the `--publish-dir` output) plus `--repo / --dest / --message / --branch` and pushes everything as one fast-forward commit via PyGithub's Git Data API (blob → tree → commit → ref.edit). Token comes from `GITHUB_OUTPUT_TOKEN` env only. The pipeline and the publisher are intentionally separate processes — a prompt-injected LLM has no reachable path to the token. The typical CI pattern is: `exec` stdout/stderr to files inside the same `--publish-dir`, run the pipeline, then run `manga_dosei-publish` so the captured logs ride the same commit.
 
 ### How a tool/step is structured
 

@@ -116,6 +116,31 @@ uv run manga_dosei 20260410
 
 セッションと artifact は `.adk/` 配下に保存されます。
 
+### 成果物のディレクトリへの書き出し
+
+`--publish-dir PATH` を渡すと、パイプライン完了後に各 artifact の最新バージョンをフラットなディレクトリへ書き出します (`pages/gemini_1.jpg` など、スラッシュ階層はそのまま保持):
+
+```bash
+uv run manga_dosei 20260410 --publish-dir /tmp/manga-out
+```
+
+### GitHub のアーカイブ repo へ push
+
+`manga_dosei-publish` はディレクトリの中身を GitHub の private repo に 1 fast-forward commit でまとめて push する独立した CLI です。日次ランをアーカイブ用 private repo に送る用途に使います:
+
+```bash
+GITHUB_OUTPUT_TOKEN=<fine-grained PAT> \
+uv run manga_dosei-publish \
+  --source /tmp/manga-out \
+  --repo owner/manga_dosei_v2_artifacts \
+  --dest 2026/04/20260410 \
+  --message "publish: 20260410"
+```
+
+token は `GITHUB_OUTPUT_TOKEN` 環境変数からのみ読み、CLI 引数では受け付けません。
+
+### 対話的にセッションを操作する
+
 ADK Web UI から同じストレージを参照して状態を確認・再開する場合:
 
 ```bash
