@@ -6,13 +6,16 @@ LLM に露出する引数は基本的に `query` のみで、それ以外は生�
 常に上書きされる。
 """
 
-import os
 from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any, Literal
 
 import httpx
 from google.adk.tools import FunctionTool, ToolContext
+
+from manga_dosei.config import get_settings
+from manga_dosei.names import TEMP_TARGET_DATE
+from manga_dosei.validation import validate_target_date
 
 _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 _TIMEOUT_SECONDS = 30.0
@@ -24,6 +27,32 @@ TavilySearchDepth = Literal["basic", "advanced"]
 # もしくは ToolContext を受けて文字列を返す callable を許容する。
 # target_date 等を state から取って動的に決めたい場合に callable を使う。
 DateResolver = str | Callable[[ToolContext], str] | None
+
+
+def resolve_date_range(
+    target_date: str,
+    start_offset: int | None,
+    end_offset: int | None,
+) -> tuple[str | None, str | None]:
+    """`target_date` (YYYYMMDD) から ISO `yyyy-mm-dd` の (start, end) を返す純関数。
+
+    `start_offset` は target からの「日数前」(正値で過去側)、
+    `end_offset` は target からの「日数後」(正値で未来側) を表す。
+    `None` のオフセットは `None` のまま返す。
+    """
+    validate_target_date(target_date)
+    base = date(int(target_date[:4]), int(target_date[4:6]), int(target_date[6:8]))
+    start = (
+        (base - timedelta(days=start_offset)).isoformat()
+        if start_offset is not None
+        else None
+    )
+    end = (
+        (base + timedelta(days=end_offset)).isoformat()
+        if end_offset is not None
+        else None
+    )
+    return start, end
 
 
 async def _call_tavily_search(
@@ -71,6 +100,15 @@ def _resolve_date(resolver: DateResolver, tool_context: ToolContext) -> str | No
     return resolver
 
 
+def _require_tavily_api_key() -> str:
+    # NOTE: read at call time (not at factory time) so tests/import-time code
+    # that has not yet set TAVILY_API_KEY do not crash with a bare KeyError.
+    secret = get_settings().tavily_api_key
+    if secret is None:
+        raise RuntimeError("TAVILY_API_KEY is not set")
+    return secret.get_secret_value()
+
+
 def make_tavily_search_tool(
     *,
     name: str,
@@ -101,7 +139,7 @@ def make_tavily_search_tool(
     fixed_exclude = list(exclude_domains) if exclude_domains else None
 
     async def _impl(query: str, tool_context: ToolContext) -> dict[str, Any]:
-        api_key = os.environ["TAVILY_API_KEY"]
+        api_key = _require_tavily_api_key()
         data = await _call_tavily_search(
             api_key=api_key,
             query=query,
@@ -131,25 +169,30 @@ def make_tavily_search_tool(
     return FunctionTool(func=_impl)
 
 
-def _parse_target_date(tool_context: ToolContext) -> date | None:
-    target_date = tool_context.state.get("temp:target_date", "") or ""
-    if len(target_date) != 8 or not target_date.isdigit():
-        return None
-    return date(int(target_date[:4]), int(target_date[4:6]), int(target_date[6:8]))
+def _state_target_date(tool_context: ToolContext) -> str | None:
+    target_date = tool_context.state.get(TEMP_TARGET_DATE, "") or ""
+    return target_date or None
 
 
 def start_date_offset_from_target(*, days_before: int) -> Callable[[ToolContext], str]:
     """`state["temp:target_date"]` から N 日前の ISO 日付を返す resolver。
 
     `days_before=2` なら対象日の 2 日前 (Tavily の index ラグ対策)。
-    state に target_date が無い場合は空文字を返し、API には渡されない。
+    state に target_date が無い、または YYYYMMDD フォーマットを満たさない場合
+    は空文字を返し、API には日付フィルタを渡さない (no-filter フォールバック)。
+    adk web 等で state を書き換える経路で型崩れが起きても Tavily 呼び出しが
+    例外で落ちないようにするための耐性。
     """
 
     def _resolver(ctx: ToolContext) -> str:
-        target = _parse_target_date(ctx)
-        if target is None:
+        target_date = _state_target_date(ctx)
+        if target_date is None:
             return ""
-        return (target - timedelta(days=days_before)).isoformat()
+        try:
+            start, _ = resolve_date_range(target_date, days_before, None)
+        except ValueError:
+            return ""
+        return start or ""
 
     return _resolver
 
@@ -158,12 +201,18 @@ def end_date_offset_from_target(*, days_after: int) -> Callable[[ToolContext], s
     """`state["temp:target_date"]` から N 日後の ISO 日付を返す resolver。
 
     `days_after=1` なら対象日の翌日まで (後日報道を index 段階で除外)。
+    state に target_date が無い、または YYYYMMDD フォーマットを満たさない場合
+    は空文字を返し、API には日付フィルタを渡さない (no-filter フォールバック)。
     """
 
     def _resolver(ctx: ToolContext) -> str:
-        target = _parse_target_date(ctx)
-        if target is None:
+        target_date = _state_target_date(ctx)
+        if target_date is None:
             return ""
-        return (target + timedelta(days=days_after)).isoformat()
+        try:
+            _, end = resolve_date_range(target_date, None, days_after)
+        except ValueError:
+            return ""
+        return end or ""
 
     return _resolver

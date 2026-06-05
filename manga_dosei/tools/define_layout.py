@@ -11,62 +11,88 @@ scenario.md から直接転記する責務)。
 """
 
 import json
-from pathlib import Path
+from functools import lru_cache
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.agent_tool import AgentTool
 
-from manga_dosei import DEFAULT_TEXT_MODEL
+from manga_dosei import paths
+from manga_dosei.config import get_settings
+from manga_dosei.names import (
+    TEMP_TARGET_DATE,
+    ArtifactName,
+    temp_key,
+)
 from manga_dosei.tools._common import (
     StepInput,
     StepOutput,
+    error_content,
     prepare_step,
+    record_last_error,
     save_step_output,
 )
 
 _STEP = "define_layout"
-_ARTIFACT = "layout.md"
-_OUTPUT_KEY = "temp:define_layout_output"
-_REQUIRED = ("scenario.md",)
-
-_LAYOUTS_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "layouts"
+_ARTIFACT = ArtifactName.LAYOUT
+_OUTPUT_KEY = temp_key(f"{_STEP}_output")
+_REQUIRED = (ArtifactName.SCENARIO,)
+_CATALOG_STATE_KEY = temp_key("layout_catalog_block")
+_SCENARIO_TEXT_KEY = temp_key("scenario_text")
 
 
 def _load_catalog() -> dict[str, dict]:
     """assets/layouts/<id>/{meta.json, ascii.txt} を読み込んでカタログ辞書を返す。"""
+    # NOTE: attribute access on `paths` so tests monkeypatching `paths.LAYOUTS_DIR`
+    # win — a `from paths import LAYOUTS_DIR` snapshot would freeze the real path.
+    layouts_dir = paths.LAYOUTS_DIR
     catalog: dict[str, dict] = {}
-    if not _LAYOUTS_DIR.is_dir():
-        raise FileNotFoundError(f"layout catalog directory not found: {_LAYOUTS_DIR}")
-    for entry in sorted(_LAYOUTS_DIR.iterdir()):
+    if not layouts_dir.is_dir():
+        raise FileNotFoundError(f"layout catalog directory not found: {layouts_dir}")
+    for entry in sorted(layouts_dir.iterdir()):
         if not entry.is_dir():
             continue
         meta_path = entry / "meta.json"
         ascii_path = entry / "ascii.txt"
+        # NOTE: 不完全なパターンディレクトリは silent skip しない。
+        # 「ファイル名 typo でカタログに載らず、image-gen で pattern_id 不明
+        # エラーになる」という debug 困難な状況を防ぐため、明示的に失敗させる。
         if not meta_path.exists() or not ascii_path.exists():
-            continue
-        meta = json.loads(meta_path.read_text())
-        catalog[meta["id"]] = {
-            "id": meta["id"],
-            "panels": meta["panels"],
-            "name": meta["name"],
-            "when_to_use": meta["when_to_use"],
-            "rows": meta["rows"],
-            "ascii": ascii_path.read_text().rstrip("\n"),
-        }
+            raise FileNotFoundError(
+                f"layout pattern {entry.name} missing meta.json or ascii.txt"
+            )
+        # NOTE: 裸の KeyError("'rows'") / JSONDecodeError 等では「どのパターンが
+        # 原因か」が last_error から読み取れない。entry.name を前置して再送する。
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            ascii_text = ascii_path.read_text(encoding="utf-8").rstrip("\n")
+            catalog[meta["id"]] = {
+                "id": meta["id"],
+                "panels": meta["panels"],
+                "name": meta["name"],
+                "when_to_use": meta["when_to_use"],
+                "rows": meta["rows"],
+                "ascii": ascii_text,
+            }
+        except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise ValueError(f"layout pattern {entry.name}: {exc}") from exc
     if not catalog:
-        raise FileNotFoundError(f"no valid layout patterns found under {_LAYOUTS_DIR}")
+        raise FileNotFoundError(f"no valid layout patterns found under {layouts_dir}")
     return catalog
 
 
-_CATALOG = _load_catalog()
+# NOTE: lazy + memoised so import 時に filesystem を叩かず、初回呼び出しでのみ disk へ。
+# カタログ破損が import error として上がり無関係な adk web まで巻き添えで落ちる
+# のを防ぐため (AGENTS.md の last_error / retry 契約)。
+@lru_cache(maxsize=1)
+def get_layout_catalog() -> dict[str, dict]:
+    return _load_catalog()
 
 
 def _format_catalog_for_prompt() -> str:
-    """カタログを LLM プロンプト用に markdown フォーマットで整形する。"""
     blocks: list[str] = []
-    for pattern_id, entry in _CATALOG.items():
+    for pattern_id, entry in get_layout_catalog().items():
         rows_text = "\n".join(f"- {row}" for row in entry["rows"])
         blocks.append(
             f"### {pattern_id} — {entry['name']} (panels={entry['panels']})\n"
@@ -92,8 +118,7 @@ layout.md は **版下構造のみ** を含む (コマタイトル・セリフ�
 """
 
 
-def _build_prompt(scenario_text: str, target_date: str) -> str:
-    catalog_block = _format_catalog_for_prompt()
+def _build_prompt(scenario_text: str, target_date: str, catalog_block: str) -> str:
     return f"""\
 あなたは漫画版下デザイナーです。下記「対象の台本」のコマ数と展開を見て、
 **レイアウトカタログから pattern_id を 1 つ選び**、その正準 ASCII と段配置を
@@ -212,18 +237,31 @@ compose_image_brief が scenario.md から直接拾います)。
 
 
 def _build_instruction(context: ReadonlyContext) -> str:
-    scenario_text = context.state.get("temp:scenario_text", "")
-    target_date = context.state.get("temp:target_date", "")
-    return _build_prompt(scenario_text, target_date)
+    scenario_text = context.state.get(_SCENARIO_TEXT_KEY, "")
+    target_date = context.state.get(TEMP_TARGET_DATE, "")
+    catalog_block = context.state.get(_CATALOG_STATE_KEY, "")
+    return _build_prompt(scenario_text, target_date, catalog_block)
 
 
 async def _before(callback_context: CallbackContext):
-    return await prepare_step(
+    prepared = await prepare_step(
         callback_context,
         step=_STEP,
         required_artifacts=_REQUIRED,
-        load_prior={"temp:scenario_text": "scenario.md"},
+        load_prior={_SCENARIO_TEXT_KEY: ArtifactName.SCENARIO},
     )
+    if prepared is not None:
+        return prepared
+    # NOTE: カタログ読み込みを import 時ではなくここで初回評価することで、
+    # 破損時に import error ではなく step の last_error / retry 契約に乗せる。
+    try:
+        catalog_block = _format_catalog_for_prompt()
+    except (FileNotFoundError, ValueError) as exc:
+        message = f"layout catalog load failed: {exc}"
+        record_last_error(callback_context, _STEP, message)
+        return error_content(_STEP, message)
+    callback_context.state[_CATALOG_STATE_KEY] = catalog_block
+    return None
 
 
 async def _after(callback_context: CallbackContext):
@@ -237,7 +275,7 @@ async def _after(callback_context: CallbackContext):
 
 _agent = LlmAgent(
     name=_STEP,
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description=_DESCRIPTION,
     instruction=_build_instruction,
     input_schema=StepInput,

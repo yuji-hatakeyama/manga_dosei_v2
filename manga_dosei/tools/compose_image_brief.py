@@ -10,7 +10,12 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.agent_tool import AgentTool
 
-from manga_dosei import DEFAULT_TEXT_MODEL
+from manga_dosei.config import get_settings
+from manga_dosei.names import (
+    TEMP_TARGET_DATE,
+    ArtifactName,
+    temp_key,
+)
 from manga_dosei.tools._common import (
     StepInput,
     StepOutput,
@@ -19,9 +24,18 @@ from manga_dosei.tools._common import (
 )
 
 _STEP = "compose_image_brief"
-_ARTIFACT = "image_brief.md"
-_OUTPUT_KEY = "temp:compose_image_brief_output"
-_REQUIRED = ("scenario.md", "layout.md", "news.md", "manifests/assets.json")
+_ARTIFACT = ArtifactName.IMAGE_BRIEF
+_OUTPUT_KEY = temp_key(f"{_STEP}_output")
+_REQUIRED = (
+    ArtifactName.SCENARIO,
+    ArtifactName.LAYOUT,
+    ArtifactName.NEWS,
+    ArtifactName.ASSETS_MANIFEST,
+)
+_SCENARIO_TEXT_KEY = temp_key("scenario_text")
+_LAYOUT_TEXT_KEY = temp_key("layout_text")
+_NEWS_TEXT_KEY = temp_key("news_text")
+_ASSETS_MANIFEST_KEY = temp_key("assets_manifest")
 
 
 _DESCRIPTION = """\
@@ -196,11 +210,11 @@ def _build_prompt(
 
 def _build_instruction(context: ReadonlyContext) -> str:
     return _build_prompt(
-        target_date=context.state.get("temp:target_date", ""),
-        scenario_text=context.state.get("temp:scenario_text", ""),
-        layout_text=context.state.get("temp:layout_text", ""),
-        news_text=context.state.get("temp:news_text", ""),
-        assets_manifest=context.state.get("temp:assets_manifest", ""),
+        target_date=context.state.get(TEMP_TARGET_DATE, ""),
+        scenario_text=context.state.get(_SCENARIO_TEXT_KEY, ""),
+        layout_text=context.state.get(_LAYOUT_TEXT_KEY, ""),
+        news_text=context.state.get(_NEWS_TEXT_KEY, ""),
+        assets_manifest=context.state.get(_ASSETS_MANIFEST_KEY, ""),
     )
 
 
@@ -210,10 +224,10 @@ async def _before(callback_context: CallbackContext):
         step=_STEP,
         required_artifacts=_REQUIRED,
         load_prior={
-            "temp:scenario_text": "scenario.md",
-            "temp:layout_text": "layout.md",
-            "temp:news_text": "news.md",
-            "temp:assets_manifest": "manifests/assets.json",
+            _SCENARIO_TEXT_KEY: ArtifactName.SCENARIO,
+            _LAYOUT_TEXT_KEY: ArtifactName.LAYOUT,
+            _NEWS_TEXT_KEY: ArtifactName.NEWS,
+            _ASSETS_MANIFEST_KEY: ArtifactName.ASSETS_MANIFEST,
         },
     )
 
@@ -229,7 +243,7 @@ async def _after(callback_context: CallbackContext):
 
 _agent = LlmAgent(
     name=_STEP,
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description=_DESCRIPTION,
     instruction=_build_instruction,
     input_schema=StepInput,

@@ -14,30 +14,27 @@
 同じレイアウトを表しており、Gemini に対しては両者を遵守させる。
 """
 
-import os
-import re
-from pathlib import Path
 from typing import Any
 
 from google import genai
 from google.adk.tools import ToolContext
 from google.genai import types
 
-from manga_dosei.validation import validate_target_date
+from manga_dosei import paths
+from manga_dosei.config import get_settings
+from manga_dosei.tools._common import build_error_result
+from manga_dosei.tools._image_gen import (
+    load_asset_parts,
+    load_brief_and_layout_sample,
+    save_page_artifact,
+)
 
 _STEP = "generate_page_gemini"
 _MODEL_LABEL = "gemini"
-_DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
 _ALLOWED_IMAGE_MIME = {"image/jpeg", "image/png"}
 
 # モデルごとに当たり外れの幅が異なるので、生成バリアント数はツール側で持つ。
 PAGE_VARIANT_COUNT = 5
-
-_REPO_ASSETS_DIR = Path(__file__).resolve().parent.parent.parent / "assets"
-_LAYOUTS_DIR = _REPO_ASSETS_DIR / "layouts"
-_CHARACTER_REF_PATH = _REPO_ASSETS_DIR / "samples" / "sanae.jpg"
-
-_PATTERN_ID_RE = re.compile(r"^-\s*pattern_id:\s*([A-Za-z0-9_-]+)\s*$", re.MULTILINE)
 
 
 _PROMPT_INTRO = """## 指示
@@ -127,6 +124,34 @@ _PROMPT_INTRO = """## 指示
 """
 
 
+def _describe_empty_response(response: Any) -> str:
+    """SDK response shape varies across versions / finish states, so chain getattr."""
+    parts: list[str] = []
+
+    candidates = getattr(response, "candidates", None) or []
+    if candidates:
+        finish_reason = getattr(candidates[0], "finish_reason", None)
+        if finish_reason is not None:
+            parts.append(f"finish_reason={getattr(finish_reason, 'name', finish_reason)}")
+        safety_ratings = getattr(candidates[0], "safety_ratings", None) or []
+        if safety_ratings:
+            first = safety_ratings[0]
+            category = getattr(first, "category", None)
+            probability = getattr(first, "probability", None)
+            parts.append(
+                f"safety[0]={getattr(category, 'name', category)}/"
+                f"{getattr(probability, 'name', probability)}"
+            )
+
+    prompt_feedback = getattr(response, "prompt_feedback", None)
+    if prompt_feedback is not None:
+        block_reason = getattr(prompt_feedback, "block_reason", None)
+        if block_reason is not None:
+            parts.append(f"block_reason={getattr(block_reason, 'name', block_reason)}")
+
+    return ", ".join(parts) if parts else "no diagnostic fields available"
+
+
 async def generate_page_gemini(
     target_date: str,
     page_number: int,
@@ -149,7 +174,7 @@ async def generate_page_gemini(
         page_number: バリアント番号（artifact 名 pages/gemini_<N>.<ext> に使う）。
 
     返り値（成功時）:
-        {"status": "success", "step": "generate_page_gemini",
+        {"status": "success", "step": "generate_page_gemini", "message": str,
          "page_number": int, "artifact": "pages/gemini_<N>.<ext>",
          "version": int, "bytes": int, "mime_type": str}
 
@@ -157,40 +182,15 @@ async def generate_page_gemini(
         {"status": "error", "step": "generate_page_gemini",
          "page_number": int, "message": str}
     """
-    try:
-        validate_target_date(target_date)
-    except ValueError as error:
-        return _error(str(error), page_number=page_number)
-
-    if not _CHARACTER_REF_PATH.exists():
-        return _error(
-            f"character reference image missing: {_CHARACTER_REF_PATH}",
-            page_number=page_number,
-        )
-
-    brief_part = await tool_context.load_artifact("image_brief.md")
-    if brief_part is None or brief_part.text is None:
-        return _error(
-            "image_brief.md is missing or unreadable (run compose_image_brief first)",
-            page_number=page_number,
-        )
-    brief_text = brief_part.text
-
-    pattern_id_match = _PATTERN_ID_RE.search(brief_text)
-    if not pattern_id_match:
-        return _error(
-            "pattern_id not found in image_brief.md "
-            "(expected `- pattern_id: <id>` near the top)",
-            page_number=page_number,
-        )
-    pattern_id = pattern_id_match.group(1)
-    sample_page_path = _LAYOUTS_DIR / pattern_id / "sample.jpg"
-    if not sample_page_path.exists():
-        return _error(
-            f"layout sample image missing for pattern_id={pattern_id}: "
-            f"{sample_page_path}",
-            page_number=page_number,
-        )
+    preflight = await load_brief_and_layout_sample(
+        tool_context,
+        step=_STEP,
+        target_date=target_date,
+        page_number=page_number,
+    )
+    if isinstance(preflight, dict):
+        return preflight
+    brief_text, sample_page_path = preflight
 
     contents: list[Any] = [
         f"{_PROMPT_INTRO}{brief_text}\n```",
@@ -201,36 +201,18 @@ async def generate_page_gemini(
         ),
         "【参考資料: 高市早苗】",
         types.Part.from_bytes(
-            data=_CHARACTER_REF_PATH.read_bytes(),
+            data=paths.CHARACTER_REF_PATH.read_bytes(),
             mime_type="image/jpeg",
         ),
     ]
 
-    asset_keys = sorted(
-        key for key in await tool_context.list_artifacts() if key.startswith("assets/")
-    )
-    for key in asset_keys:
-        asset_part = await tool_context.load_artifact(key)
-        if (
-            asset_part is None
-            or asset_part.inline_data is None
-            or not asset_part.inline_data.data
-        ):
-            continue
-        asset_name = key.removeprefix("assets/")
-        if "." in asset_name:
-            asset_name = asset_name.rsplit(".", 1)[0]
-        contents.append(f"【参考資料: {asset_name}】")
+    for asset in await load_asset_parts(tool_context):
+        contents.append(f"【参考資料: {asset.asset_name}】")
         contents.append(
-            types.Part(
-                inline_data=types.Blob(
-                    data=asset_part.inline_data.data,
-                    mime_type=asset_part.inline_data.mime_type or "image/jpeg",
-                )
-            )
+            types.Part(inline_data=types.Blob(data=asset.data, mime_type=asset.mime))
         )
 
-    model_name = os.getenv("GEMINI_IMAGE_MODEL", _DEFAULT_IMAGE_MODEL)
+    model_name = get_settings().gemini_image_model
     try:
         client = genai.Client()
         response = await client.aio.models.generate_content(
@@ -242,7 +224,14 @@ async def generate_page_gemini(
             ),
         )
     except Exception as error:
-        return _error(f"gemini call failed: {error}", page_number=page_number)
+        # NOTE: include exception type so ResourceExhausted / ConnectionError /
+        # auth errors are distinguishable without grepping logs.
+        return build_error_result(
+            tool_context,
+            _STEP,
+            f"gemini call failed ({type(error).__name__}): {error}",
+            page_number=page_number,
+        )
 
     image_bytes: bytes | None = None
     image_mime: str | None = None
@@ -254,42 +243,31 @@ async def generate_page_gemini(
             break
 
     if not image_bytes:
-        return _error("no image part in response", page_number=page_number)
+        # NOTE: empty image_part is almost always safety/recitation/MAX_TOKENS;
+        # surface finish_reason / block_reason / first safety rating so blind
+        # retry has a chance of being skipped at the CLI layer.
+        return build_error_result(
+            tool_context,
+            _STEP,
+            f"no image part in response ({_describe_empty_response(response)})",
+            page_number=page_number,
+        )
     if image_mime not in _ALLOWED_IMAGE_MIME:
-        return _error(
+        return build_error_result(
+            tool_context,
+            _STEP,
             f"unexpected image mime: {image_mime}",
             page_number=page_number,
         )
 
     extension = ".jpg" if image_mime == "image/jpeg" else ".png"
-    artifact_name = f"pages/{_MODEL_LABEL}_{page_number}{extension}"
-    version = await tool_context.save_artifact(
-        artifact_name,
-        types.Part(inline_data=types.Blob(data=image_bytes, mime_type=image_mime)),
+    return await save_page_artifact(
+        tool_context,
+        step=_STEP,
+        model_label=_MODEL_LABEL,
+        page_number=page_number,
+        target_date=target_date,
+        image_bytes=image_bytes,
+        mime=image_mime,
+        extension=extension,
     )
-
-    tool_context.state.update(
-        {
-            "target_date": target_date,
-            f"page_{_MODEL_LABEL}_{page_number}_artifact": artifact_name,
-            f"page_{_MODEL_LABEL}_{page_number}_version": version,
-            "last_error": None,
-        }
-    )
-
-    return {
-        "status": "success",
-        "step": _STEP,
-        "page_number": page_number,
-        "artifact": artifact_name,
-        "version": version,
-        "bytes": len(image_bytes),
-        "mime_type": image_mime,
-    }
-
-
-def _error(message: str, *, page_number: int | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {"status": "error", "step": _STEP, "message": message}
-    if page_number is not None:
-        payload["page_number"] = page_number
-    return payload

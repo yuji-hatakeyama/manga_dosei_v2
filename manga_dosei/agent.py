@@ -1,8 +1,6 @@
-import os
-
 from google.adk.agents import Agent
 
-from manga_dosei import DEFAULT_TEXT_MODEL
+from manga_dosei.config import get_settings
 from manga_dosei.tools import (
     collect_assets_tool,
     compose_image_brief_tool,
@@ -18,7 +16,7 @@ from manga_dosei.tools import (
 
 root_agent = Agent(
     name="manga_dosei",
-    model=os.getenv("GEMINI_TEXT_MODEL", DEFAULT_TEXT_MODEL),
+    model=get_settings().gemini_text_model,
     description="Runs and inspects the manga dosei daily content workflow.",
     instruction="""
 あなたは manga dosei ワークフローのエージェントです。

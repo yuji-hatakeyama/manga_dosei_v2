@@ -11,9 +11,16 @@ from google.adk.tools import ToolContext
 from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
 
-from manga_dosei import DEFAULT_TEXT_MODEL
+from manga_dosei.config import get_settings
+from manga_dosei.names import (
+    TEMP_TARGET_DATE,
+    ArtifactName,
+    StateKey,
+    temp_key,
+)
 from manga_dosei.tools._common import (
     StepInput,
+    clear_last_error,
     error_content,
     prepare_step,
     record_last_error,
@@ -27,9 +34,10 @@ from manga_dosei.tools._wikipedia import (
 )
 
 _STEP = "collect_assets"
-_MANIFEST_ARTIFACT = "manifests/assets.json"
-_REQUIRED = ("scenario.md",)
-_COLLECTED_KEY = "temp:collected_assets"
+_MANIFEST_ARTIFACT = ArtifactName.ASSETS_MANIFEST
+_REQUIRED = (ArtifactName.SCENARIO,)
+_COLLECTED_KEY = temp_key("collected_assets")
+_SCENARIO_TEXT_KEY = temp_key("scenario_text")
 
 
 _DESCRIPTION = """\
@@ -170,7 +178,7 @@ SVG など他の形式は別の候補を選んでください。
 
 
 def _build_instruction(context: ReadonlyContext) -> str:
-    scenario_text = context.state.get("temp:scenario_text", "")
+    scenario_text = context.state.get(_SCENARIO_TEXT_KEY, "")
     return _build_prompt(scenario_text)
 
 
@@ -179,7 +187,7 @@ async def _before(callback_context: CallbackContext) -> types.Content | None:
         callback_context,
         step=_STEP,
         required_artifacts=_REQUIRED,
-        load_prior={"temp:scenario_text": "scenario.md"},
+        load_prior={_SCENARIO_TEXT_KEY: ArtifactName.SCENARIO},
     )
     if err is not None:
         return err
@@ -188,7 +196,7 @@ async def _before(callback_context: CallbackContext) -> types.Content | None:
 
 
 async def _after(callback_context: CallbackContext) -> types.Content | None:
-    target_date = callback_context.state.get("temp:target_date", "")
+    target_date = callback_context.state.get(TEMP_TARGET_DATE, "")
     collected = callback_context.state.get(_COLLECTED_KEY, []) or []
 
     if not collected:
@@ -219,13 +227,13 @@ async def _after(callback_context: CallbackContext) -> types.Content | None:
 
     callback_context.state.update(
         {
-            "target_date": target_date,
-            "asset_manifest_artifact": _MANIFEST_ARTIFACT,
-            "asset_count": len(collected),
-            "status": "assets_completed",
-            "last_error": None,
+            StateKey.TARGET_DATE: target_date,
+            StateKey.ASSET_MANIFEST_ARTIFACT: _MANIFEST_ARTIFACT,
+            StateKey.ASSET_COUNT: len(collected),
+            StateKey.STATUS: "assets_completed",
         }
     )
+    clear_last_error(callback_context)
 
     return status_content(
         {
@@ -240,7 +248,7 @@ async def _after(callback_context: CallbackContext) -> types.Content | None:
 
 _agent = LlmAgent(
     name=_STEP,
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description=_DESCRIPTION,
     instruction=_build_instruction,
     input_schema=StepInput,

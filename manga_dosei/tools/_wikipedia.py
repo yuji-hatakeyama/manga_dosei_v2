@@ -6,10 +6,11 @@ User-Agent を本プロジェクト固有のものにし、Wikipedia の rate-li
 適切に応じる。
 """
 
-import os
 from typing import Any
 
 import httpx
+
+from manga_dosei.config import get_settings
 
 _API_ENDPOINT = "https://commons.wikimedia.org/w/api.php"
 _TIMEOUT_SECONDS = 30.0
@@ -22,7 +23,7 @@ def wikimedia_user_agent() -> str:
     未設定の場合は連絡先なしで返すが、Wikipedia 側で rate-limit を
     厳しく扱われる可能性があるため、運用時は設定すること。
     """
-    contact = os.environ.get("WIKIMEDIA_CONTACT_EMAIL", "").strip()
+    contact = (get_settings().wikimedia_contact_email or "").strip()
     contact_part = f"; {contact}" if contact else ""
     return (
         f"manga_dosei/1.0 "
@@ -46,7 +47,8 @@ async def wiki_image_search(query: str, limit: int = 10) -> dict[str, Any]:
         limit: 結果数の上限 (1〜50)。範囲外は clamp される。
 
     返り値（成功時）:
-        {"results": [
+        {"status": "success",
+         "results": [
             {"title": "File:...", "url": "https://...",
              "mime_type": "image/jpeg", "size": int,
              "dimensions": {"width": int, "height": int}},
@@ -73,6 +75,17 @@ async def wiki_image_search(query: str, limit: int = 10) -> dict[str, Any]:
             data = response.json()
     except httpx.HTTPError as error:
         return {"status": "error", "message": f"wikipedia search failed: {error}"}
+    except ValueError as error:
+        # NOTE: response.json() raises ValueError on HTML/garbled bodies
+        # (Wikimedia maintenance page, login redirect, captcha).
+        return {"status": "error", "message": f"wikipedia search decode failed: {error}"}
+
+    # NOTE: distinguish API error envelope from genuinely empty results — otherwise
+    # the caller cannot tell "Wikipedia returned an error" from "no images found".
+    api_error = data.get("error")
+    if api_error:
+        info = api_error.get("info") or api_error.get("code") or str(api_error)
+        return {"status": "error", "message": f"wikipedia search api error: {info}"}
 
     pages = (data.get("query") or {}).get("pages") or {}
     results: list[dict[str, Any]] = []
@@ -93,7 +106,7 @@ async def wiki_image_search(query: str, limit: int = 10) -> dict[str, Any]:
                 },
             }
         )
-    return {"results": results}
+    return {"status": "success", "results": results}
 
 
 async def wiki_image_info(title: str) -> dict[str, Any]:
@@ -104,7 +117,8 @@ async def wiki_image_info(title: str) -> dict[str, Any]:
             wiki_image_search の `title` フィールドをそのまま渡せばよい。
 
     返り値（成功時）:
-        {"title": ..., "url": ..., "description_url": ...,
+        {"status": "success",
+         "title": ..., "url": ..., "description_url": ...,
          "mime_type": ..., "size": int,
          "dimensions": {"width": int, "height": int},
          "license": str | None, "author": str | None}
@@ -125,11 +139,27 @@ async def wiki_image_info(title: str) -> dict[str, Any]:
             data = response.json()
     except httpx.HTTPError as error:
         return {"status": "error", "message": f"wikipedia info failed: {error}"}
+    except ValueError as error:
+        # NOTE: response.json() raises ValueError on HTML/garbled bodies; surface as
+        # a structured failure so callers don't see an uncaught exception.
+        return {"status": "error", "message": f"wikipedia info decode failed: {error}"}
+
+    # NOTE: error envelope vs. missing imageinfo are different root causes — keep them
+    # distinguishable so debugging the FunctionTool 6 months later is tractable.
+    api_error = data.get("error")
+    if api_error:
+        info = api_error.get("info") or api_error.get("code") or str(api_error)
+        return {"status": "error", "message": f"wikipedia info api error: {info}"}
 
     pages = (data.get("query") or {}).get("pages") or {}
     page = next(iter(pages.values()), None)
     if page is None:
         return {"status": "error", "message": f"no page returned for title: {title}"}
+
+    # NOTE: MediaWiki uses a -1 page id sentinel with `missing` flag for unknown titles.
+    # Report it separately from the "no imageinfo" case below.
+    if "missing" in page:
+        return {"status": "error", "message": f"image not found on Commons: {title}"}
 
     infos = page.get("imageinfo") or []
     if not infos:
@@ -138,6 +168,7 @@ async def wiki_image_info(title: str) -> dict[str, Any]:
     extmeta = info.get("extmetadata") or {}
 
     return {
+        "status": "success",
         "title": page.get("title"),
         "url": info.get("url"),
         "description_url": info.get("descriptionurl"),

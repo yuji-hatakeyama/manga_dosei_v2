@@ -20,7 +20,12 @@ from google.adk.tools import FunctionTool
 from google.adk.tools.agent_tool import AgentTool
 from pydantic import BaseModel, Field
 
-from manga_dosei import DEFAULT_TEXT_MODEL
+from manga_dosei.config import get_settings
+from manga_dosei.names import (
+    TEMP_TARGET_DATE,
+    ArtifactName,
+    temp_key,
+)
 from manga_dosei.tools._common import (
     StepInput,
     StepOutput,
@@ -35,10 +40,8 @@ from manga_dosei.tools._tavily import (
 
 _fetch_url_tool = FunctionTool(func=fetch_url)
 
-# Tavily Search を 2 種類のドメイン固定 tool としてコード側で量産する。
-# どちらも `end_date=対象日の翌日` で後日報道を index 段階で除外する。
-# LLM は query (検索語) だけ決めればよく、topic / depth / domain / 日付範囲は
-# プロンプトで揺らがない。
+# どちらのドメイン固定 tool も end_date=対象日の翌日 で後日報道を index 段階で除外。
+# トピック/件数/ドメイン/日付範囲がプロンプトで揺らがないようコード側で固定する。
 
 _search_news_jiji = make_tavily_search_tool(
     name="search_news_jiji",
@@ -69,11 +72,8 @@ _search_news_yahoo = make_tavily_search_tool(
 )
 
 
-# --- summarize_url sub-agent (AgentTool) ---
-# tavily_extract を直接 section_researcher に渡すと raw_content (URL 本文の全文) が
-# 履歴に蓄積して 1M token を超えるため、要約 sub-agent でラップする。
-# AgentTool は InMemorySessionService で child を動かすので、raw_content は
-# child の history に閉じ込められ、親 (section_researcher) には要約のみが返る。
+# tavily_extract を直接 researcher に渡すと raw_content が 1M token を超えるため、
+# AgentTool ラップで child の InMemorySessionService に閉じ込め、親には要約のみ返す。
 
 
 class SummarizeUrlInput(BaseModel):
@@ -134,7 +134,7 @@ URL 本文から focus 観点に絞ったコンパクトな markdown 要約を�
 
 _summarizer = LlmAgent(
     name="summarize_url",
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description=(
         "URL を `fetch_url` で取得し、`focus` で指定した観点に絞った"
         "コンパクトな markdown 要約 (概ね 800 文字以内) を返すツール。"
@@ -144,7 +144,7 @@ _summarizer = LlmAgent(
     instruction=_summarize_url_instruction,
     input_schema=SummarizeUrlInput,
     output_schema=SummarizeUrlOutput,
-    output_key="temp:summarize_url_output",
+    output_key=temp_key("summarize_url_output"),
     tools=[_fetch_url_tool],
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
@@ -155,12 +155,7 @@ summarize_url_tool = AgentTool(agent=_summarizer)
 
 
 def _build_research_tools() -> list:
-    """section_researcher / enhanced_search_executor で使う共通ツールセット。
-
-    - search_news_jiji: JIJI.COM のニュース検索 (snippet レベルで context-safe)
-    - search_news_yahoo: Yahoo!ニュース検索 (人物背景用)
-    - summarize_url_tool: 重要 URL を深掘りするときに要約のみ返す
-    """
+    """section_researcher / enhanced_search_executor で使う共通ツールセット。"""
     return [
         _search_news_jiji,
         _search_news_yahoo,
@@ -169,11 +164,12 @@ def _build_research_tools() -> list:
 
 
 _STEP = "enrich_news"
-_ARTIFACT = "news.md"
-_OUTPUT_KEY = "temp:enrich_news_output"
-_FINDINGS_KEY = "temp:enrich_section_findings"
-_EVAL_KEY = "temp:enrich_research_evaluation"
-_REQUIRED = ("dosei.md",)
+_ARTIFACT = ArtifactName.NEWS
+_OUTPUT_KEY = temp_key(f"{_STEP}_output")
+_FINDINGS_KEY = temp_key("enrich_section_findings")
+_EVAL_KEY = temp_key("enrich_research_evaluation")
+_DOSEI_TEXT_KEY = temp_key("dosei_text")
+_REQUIRED = (ArtifactName.DOSEI,)
 _MAX_REFINEMENT_ITERATIONS = 2
 
 
@@ -233,8 +229,8 @@ class EscalationChecker(BaseAgent):
 
 
 def _section_researcher_instruction(context: ReadonlyContext) -> str:
-    target_date = context.state.get("temp:target_date", "")
-    dosei_text = context.state.get("temp:dosei_text", "")
+    target_date = context.state.get(TEMP_TARGET_DATE, "")
+    dosei_text = context.state.get(_DOSEI_TEXT_KEY, "")
     return f"""\
 あなたは「漫画台本作家のための取材リサーチャー」です。
 下記「対象の首相動静」を題材に、
@@ -430,7 +426,7 @@ scenario writer は「学べる・興味を持つ・身近に感じる」を満�
 
 _section_researcher = LlmAgent(
     name="enrich_section_researcher",
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description="Tavily で多角的に深掘り調査し research findings を生成。",
     instruction=_section_researcher_instruction,
     input_schema=StepInput,
@@ -440,7 +436,7 @@ _section_researcher = LlmAgent(
 
 
 def _research_evaluator_instruction(context: ReadonlyContext) -> str:
-    target_date = context.state.get("temp:target_date", "")
+    target_date = context.state.get(TEMP_TARGET_DATE, "")
     findings = context.state.get(_FINDINGS_KEY, "")
     return f"""\
 あなたは漫画編集者です。下記 findings は「漫画台本作家に渡す取材資料」として、
@@ -487,21 +483,20 @@ findings:
 
 _research_evaluator = LlmAgent(
     name="enrich_research_evaluator",
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description="findings を評価して follow-up クエリを生成。",
     instruction=_research_evaluator_instruction,
     output_schema=Feedback,
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
     output_key=_EVAL_KEY,
-    # 直前の section_researcher の tool 呼び出し履歴は不要
-    # (findings は state 経由で受け取る)
+    # findings は state 経由で受け取るので直前の tool 履歴は不要。
     include_contents="none",
 )
 
 
 def _enhanced_search_instruction(context: ReadonlyContext) -> str:
-    target_date = context.state.get("temp:target_date", "")
+    target_date = context.state.get(TEMP_TARGET_DATE, "")
     findings = context.state.get(_FINDINGS_KEY, "")
     evaluation = context.state.get(_EVAL_KEY, {}) or {}
     comment = evaluation.get("comment", "")
@@ -575,20 +570,19 @@ Phase 1 と同じ markdown 構造
 
 _enhanced_search_executor = LlmAgent(
     name="enrich_enhanced_search_executor",
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description="follow-up queries を全消化して findings を更新。",
     instruction=_enhanced_search_instruction,
     tools=_build_research_tools(),
     output_key=_FINDINGS_KEY,
-    # 過去の section_researcher / 前 iteration の履歴は不要
-    # (findings/eval を state から取る)
+    # findings/eval は state から取るので過去の tool 履歴は不要。
     include_contents="none",
 )
 
 
 def _news_composer_instruction(context: ReadonlyContext) -> str:
-    target_date = context.state.get("temp:target_date", "")
-    dosei_text = context.state.get("temp:dosei_text", "")
+    target_date = context.state.get(TEMP_TARGET_DATE, "")
+    dosei_text = context.state.get(_DOSEI_TEXT_KEY, "")
     findings = context.state.get(_FINDINGS_KEY, "")
     return f"""\
 あなたは漫画台本作家への資料を組み立てる編集者です。
@@ -711,14 +705,14 @@ findings 末尾の **「## 参照ソース」セクションをそのまま流�
 
 _news_composer = LlmAgent(
     name="enrich_news_composer",
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description="findings + 首相動静から最終 news.md を組み立てる。",
     instruction=_news_composer_instruction,
     output_schema=StepOutput,
     output_key=_OUTPUT_KEY,
     disallow_transfer_to_parent=True,
     disallow_transfer_to_peers=True,
-    # 直前 sub_agents の tool 履歴は不要 (findings/dosei は state 経由)
+    # findings/dosei は state 経由で取るので直前 sub_agents の履歴は不要。
     include_contents="none",
 )
 
@@ -728,7 +722,7 @@ async def _before(callback_context: CallbackContext):
         callback_context,
         step=_STEP,
         required_artifacts=_REQUIRED,
-        load_prior={"temp:dosei_text": "dosei.md"},
+        load_prior={_DOSEI_TEXT_KEY: ArtifactName.DOSEI},
     )
 
 

@@ -5,7 +5,12 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.agent_tool import AgentTool
 
-from manga_dosei import DEFAULT_TEXT_MODEL
+from manga_dosei.config import get_settings
+from manga_dosei.names import (
+    TEMP_TARGET_DATE,
+    ArtifactName,
+    temp_key,
+)
 from manga_dosei.tools._common import (
     StepInput,
     StepOutput,
@@ -14,9 +19,10 @@ from manga_dosei.tools._common import (
 )
 
 _STEP = "generate_scenario"
-_ARTIFACT = "scenario.md"
-_OUTPUT_KEY = "temp:generate_scenario_output"
-_REQUIRED = ("news.md",)
+_ARTIFACT = ArtifactName.SCENARIO
+_OUTPUT_KEY = temp_key(f"{_STEP}_output")
+_REQUIRED = (ArtifactName.NEWS,)
+_NEWS_TEXT_KEY = temp_key("news_text")
 
 _DESCRIPTION = """\
 news.md から漫画台本を生成して scenario.md を artifact として保存するツール。
@@ -331,8 +337,8 @@ def _build_prompt(news_text: str, target_date: str) -> str:
 
 
 def _build_instruction(context: ReadonlyContext) -> str:
-    news_text = context.state.get("temp:news_text", "")
-    target_date = context.state.get("temp:target_date", "")
+    news_text = context.state.get(_NEWS_TEXT_KEY, "")
+    target_date = context.state.get(TEMP_TARGET_DATE, "")
     return _build_prompt(news_text, target_date)
 
 
@@ -341,7 +347,7 @@ async def _before(callback_context: CallbackContext):
         callback_context,
         step=_STEP,
         required_artifacts=_REQUIRED,
-        load_prior={"temp:news_text": "news.md"},
+        load_prior={_NEWS_TEXT_KEY: ArtifactName.NEWS},
     )
 
 
@@ -356,7 +362,7 @@ async def _after(callback_context: CallbackContext):
 
 _agent = LlmAgent(
     name=_STEP,
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description=_DESCRIPTION,
     instruction=_build_instruction,
     input_schema=StepInput,

@@ -7,6 +7,8 @@ from google.adk.agents.callback_context import CallbackContext
 from google.genai import types
 from pydantic import BaseModel, ValidationError
 
+from manga_dosei.names import TEMP_TARGET_DATE, StateKey
+from manga_dosei.tools._state import LastError, error_result
 from manga_dosei.validation import validate_target_date
 
 
@@ -28,22 +30,69 @@ class StepOutput(BaseModel):
     error: str = ""
 
 
-def parse_target_date_input(callback_context: CallbackContext) -> str | None:
+def parse_step_output(output: Any) -> tuple[str | None, str | None]:
+    """LlmAgent の StepOutput 出力を (body, error) に正規化する純粋関数。
+
+    `save_step_output` の callback から呼ばれる業務ロジックの pure core。
+    CallbackContext を触らないので単体テスト可能。
+
+    挙動:
+      - dict / StepOutput / str を受け付ける (LLM 応答経路で実際に観測される形)。
+      - error が非空なら ambiguity を潰すため body より優先する (失敗を見逃さない)。
+      - body が空白のみなら未設定扱い (rstrip 後の空文字を error 化はしない)。
+      - 入力が None や未対応型なら (None, "<理由>") を返す。
+    """
+    if output is None:
+        return None, "output_key present but value is None"
+    if isinstance(output, BaseModel):
+        output = output.model_dump()
+    if isinstance(output, str):
+        body = output.strip()
+        return (body or None), None
+    if not isinstance(output, dict):
+        return None, f"unexpected output type: {type(output).__name__}"
+    error = (output.get("error") or "").strip()
+    if error:
+        return None, error
+    body = (output.get("body") or "").strip()
+    if not body:
+        return None, "agent reported failure"
+    return body, None
+
+
+def decide_missing(
+    required: tuple[str, ...] | list[str],
+    available: set[str] | frozenset[str] | list[str] | tuple[str, ...],
+) -> list[str]:
+    """`required` のうち `available` に無いものを順序保ったまま返す純粋関数。
+
+    `prepare_step` の required_artifacts チェックの pure core。
+    """
+    available_set = set(available)
+    return [name for name in required if name not in available_set]
+
+
+def parse_target_date_input(
+    callback_context: CallbackContext,
+) -> tuple[str | None, str | None]:
     """AgentTool が user_content の text に JSON で詰めた引数から target_date を取り出す。
 
     input_schema=StepInput により形式は保証されているので、JSON parse と
-    Pydantic validation のみ行い、失敗したら None を返す。
+    Pydantic validation のみ行い、失敗時は (None, reason) を返す。
+    reason は呼び出し元が last_error に積むための discriminator
+    (`no_user_content` / `empty_text` / `validation_error: <detail>`)。
     """
     user_content = callback_context.user_content
     if not user_content or not user_content.parts:
-        return None
+        return None, "no_user_content"
     text = (user_content.parts[0].text or "").strip()
     if not text:
-        return None
+        return None, "empty_text"
     try:
-        return StepInput.model_validate_json(text).target_date
-    except ValidationError:
-        return None
+        return StepInput.model_validate_json(text).target_date, None
+    except ValidationError as error:
+        # NOTE: pydantic detail を含めないと LLM が自己修正できない
+        return None, f"validation_error: {error}"
 
 
 def status_content(payload: dict[str, Any]) -> types.Content:
@@ -58,19 +107,10 @@ def status_content(payload: dict[str, Any]) -> types.Content:
     )
 
 
-def error_content(step: str, message: str) -> types.Content:
-    return status_content({"status": "error", "step": step, "message": message})
-
-
-def missing_content(step: str, missing: list[str]) -> types.Content:
-    return status_content(
-        {
-            "status": "error",
-            "step": step,
-            "message": "required artifacts are missing",
-            "missing_artifacts": missing,
-        }
-    )
+def error_content(step: str, message: str, **extras: Any) -> types.Content:
+    payload: dict[str, Any] = {"status": "error", "step": step, "message": message}
+    payload.update(extras)
+    return status_content(payload)
 
 
 async def save_text_artifact(
@@ -103,15 +143,37 @@ async def list_artifact_keys(callback_context: CallbackContext) -> set[str]:
 
 
 def record_last_error(
-    callback_context: CallbackContext,
+    callback_context: Any,
     step: str,
     message: str,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    payload: dict[str, Any] = {"step": step, "message": message}
-    if extra:
-        payload.update(extra)
-    callback_context.state["last_error"] = payload
+    payload: LastError = {"step": step, "message": message, **(extra or {})}  # type: ignore[typeddict-item]
+    callback_context.state[StateKey.LAST_ERROR] = payload
+
+
+def clear_last_error(callback_context: Any) -> None:
+    callback_context.state[StateKey.LAST_ERROR] = None
+
+
+def build_error_result(
+    tool_context: Any,
+    step: str,
+    message: str,
+    **extras: Any,
+) -> dict[str, Any]:
+    """Direct-tool error helper: record `last_error` and return an error dict.
+
+    Used by `FunctionTool`-style tools (no prepare_step/save_step_output
+    pipeline) that need to both write `state["last_error"]` for the CLI
+    retry/abort path and return a payload to the caller. `extras` ride the
+    returned dict (e.g. `page_number=`) and any key that is also declared
+    on `LastError` rides `state["last_error"]` too.
+    """
+    payload = error_result(step, message)
+    payload.update(extras)
+    record_last_error(tool_context, step, message, extras or None)
+    return payload
 
 
 async def prepare_step(
@@ -133,18 +195,23 @@ async def prepare_step(
         load_prior: state_key -> artifact_name のマップ。本文を state にロードする。
             instruction で `{state_key}` を参照する場合に使う。
     """
-    target_date = parse_target_date_input(callback_context)
+    target_date, reason = parse_target_date_input(callback_context)
     if target_date is None:
-        return error_content(step, "missing or invalid target_date")
+        # NOTE: AgentTool input plumbing problem (wiring) — not a step-level
+        # failure. Do NOT touch last_error so an upstream step's failure
+        # context survives the CLI retry/abort decision.
+        message = f"missing or invalid target_date ({reason})"
+        return error_content(step, message, reason=reason)
     try:
         validate_target_date(target_date)
     except ValueError as error:
-        record_last_error(callback_context, step, str(error))
+        # Same rationale as above: malformed target_date is wiring, not a step
+        # failure.
         return error_content(step, str(error))
 
     if required_artifacts:
         existing = await list_artifact_keys(callback_context)
-        missing = [name for name in required_artifacts if name not in existing]
+        missing = decide_missing(required_artifacts, existing)
         if missing:
             record_last_error(
                 callback_context,
@@ -152,9 +219,13 @@ async def prepare_step(
                 "required artifacts are missing",
                 {"missing_artifacts": missing},
             )
-            return missing_content(step, missing)
+            return error_content(
+                step,
+                "required artifacts are missing",
+                missing_artifacts=missing,
+            )
 
-    callback_context.state["temp:target_date"] = target_date
+    callback_context.state[TEMP_TARGET_DATE] = target_date
     for state_key, artifact_name in (load_prior or {}).items():
         text = await load_text_artifact(callback_context, artifact_name)
         if text is None:
@@ -178,14 +249,22 @@ async def save_step_output(
     body が空でない場合のみ artifact として保存する。
     body が空 (= 失敗) なら error メッセージで error_content を返し、artifact は書かない。
     """
-    output = callback_context.state.get(output_key) or {}
-    body = (output.get("body") or "").strip()
-    if not body:
-        message = output.get("error") or "agent reported failure"
+    # NOTE: state に output_key 自体が無い場合は LlmAgent の配線不良
+    # (output_schema 不一致 / callback 順序バグ等) で、LLM 応答の失敗とは別物。
+    # 同じ "agent reported failure" に潰すと根本原因が見えなくなるので分岐する。
+    if output_key not in callback_context.state:
+        message = "output_key missing from state (no state entry written by agent)"
+        record_last_error(callback_context, step, message, {"output_key": output_key})
+        # F2: keep Content extras aligned with last_error so the AgentTool-facing
+        # payload carries the same output_key discriminator.
+        return error_content(step, message, output_key=output_key)
+    body, error = parse_step_output(callback_context.state.get(output_key))
+    if body is None:
+        message = error or "agent reported failure"
         record_last_error(callback_context, step, message)
         return error_content(step, message)
     version = await save_text_artifact(callback_context, artifact_name, body)
-    callback_context.state["last_error"] = None
+    clear_last_error(callback_context)
     return status_content(
         {
             "status": "success",

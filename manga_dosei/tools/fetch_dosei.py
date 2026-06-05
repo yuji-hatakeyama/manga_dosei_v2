@@ -7,7 +7,8 @@ from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools import FunctionTool
 from google.adk.tools.agent_tool import AgentTool
 
-from manga_dosei import DEFAULT_TEXT_MODEL
+from manga_dosei.config import get_settings
+from manga_dosei.names import TEMP_TARGET_DATE, ArtifactName, temp_key
 from manga_dosei.tools._common import (
     StepInput,
     StepOutput,
@@ -42,8 +43,8 @@ _search_jiji_for_dosei = make_tavily_search_tool(
 
 
 _STEP = "fetch_dosei"
-_ARTIFACT = "dosei.md"
-_OUTPUT_KEY = "temp:fetch_dosei_output"
+_ARTIFACT = ArtifactName.DOSEI
+_OUTPUT_KEY = temp_key(f"{_STEP}_output")
 
 
 _DESCRIPTION = """\
@@ -115,7 +116,7 @@ https://www.jiji.com/jc/article?k=2026010100169
 
 
 def _build_instruction(context: ReadonlyContext) -> str:
-    return _build_prompt(context.state.get("temp:target_date", ""))
+    return _build_prompt(context.state.get(TEMP_TARGET_DATE, ""))
 
 
 async def _before(callback_context: CallbackContext):
@@ -133,7 +134,7 @@ async def _after(callback_context: CallbackContext):
 
 _agent = LlmAgent(
     name=_STEP,
-    model=DEFAULT_TEXT_MODEL,
+    model=get_settings().gemini_text_model,
     description=_DESCRIPTION,
     instruction=_build_instruction,
     input_schema=StepInput,

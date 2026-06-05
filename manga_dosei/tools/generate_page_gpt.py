@@ -9,23 +9,31 @@ OpenAI Images Edit API を呼び、画像を artifact として保存する。
 (verbatim セリフ・視覚要素含む) / 描画前チェックリスト / 免責文言 が
 すべて入っているため、本ツールの prompt template は画風・参照画像の使い方など
 描画固有ルールに専念する。
+
+【ページ例】は image_brief.md 先頭の `- pattern_id: <id>` から ID を読み取り、
+`assets/layouts/<id>/sample.jpg` を選択添付する。サンプルとブリーフの ASCII 図は
+同じレイアウトを表しており、OpenAI に対しては両者を遵守させる。OpenAI Images
+Edit API は画像をフラットなリストでしか受け取れないため、添付順を
+「### 添付画像の順序」セクションでプロンプト末尾に明示する。
 """
 
 import base64
-import os
-import re
-from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from google.adk.tools import ToolContext
-from google.genai import types
 from openai import AsyncOpenAI
 
-from manga_dosei.validation import validate_target_date
+from manga_dosei import paths
+from manga_dosei.config import get_settings
+from manga_dosei.tools._common import build_error_result
+from manga_dosei.tools._image_gen import (
+    load_asset_parts,
+    load_brief_and_layout_sample,
+    save_page_artifact,
+)
 
 _STEP = "generate_page_gpt"
 _MODEL_LABEL = "gpt"
-_DEFAULT_IMAGE_MODEL = "gpt-image-2"
 _IMAGE_SIZE = "1024x1536"
 _IMAGE_QUALITY = "high"
 _OUTPUT_FORMAT = "png"
@@ -35,11 +43,14 @@ _OUTPUT_EXT = ".png"
 # モデルごとに当たり外れの幅が異なるので、生成バリアント数はツール側で持つ。
 PAGE_VARIANT_COUNT = 2
 
-_REPO_ASSETS_DIR = Path(__file__).resolve().parent.parent.parent / "assets"
-_LAYOUTS_DIR = _REPO_ASSETS_DIR / "layouts"
-_CHARACTER_REF_PATH = _REPO_ASSETS_DIR / "samples" / "sanae.jpg"
 
-_PATTERN_ID_RE = re.compile(r"^-\s*pattern_id:\s*([A-Za-z0-9_-]+)\s*$", re.MULTILINE)
+class _AttachedImage(NamedTuple):
+    """1 レコードにまとめて images と image_labels の index 不整合を型で防ぐ。"""
+
+    filename: str
+    data: bytes
+    mime: str
+    label: str
 
 
 _PROMPT_INTRO = """## 指示
@@ -173,7 +184,7 @@ async def generate_page_gpt(
         page_number: バリアント番号（artifact 名 pages/gpt_<N>.png に使う）。
 
     返り値（成功時）:
-        {"status": "success", "step": "generate_page_gpt",
+        {"status": "success", "step": "generate_page_gpt", "message": str,
          "page_number": int, "artifact": "pages/gpt_<N>.png",
          "version": int, "bytes": int, "mime_type": "image/png"}
 
@@ -181,80 +192,55 @@ async def generate_page_gpt(
         {"status": "error", "step": "generate_page_gpt",
          "page_number": int, "message": str}
     """
-    try:
-        validate_target_date(target_date)
-    except ValueError as error:
-        return _error(str(error), page_number=page_number)
-
-    if not _CHARACTER_REF_PATH.exists():
-        return _error(
-            f"character reference image missing: {_CHARACTER_REF_PATH}",
-            page_number=page_number,
-        )
-
-    brief_part = await tool_context.load_artifact("image_brief.md")
-    if brief_part is None or brief_part.text is None:
-        return _error(
-            "image_brief.md is missing or unreadable (run compose_image_brief first)",
-            page_number=page_number,
-        )
-    brief_text = brief_part.text
-
-    pattern_id_match = _PATTERN_ID_RE.search(brief_text)
-    if not pattern_id_match:
-        return _error(
-            "pattern_id not found in image_brief.md "
-            "(expected `- pattern_id: <id>` near the top)",
-            page_number=page_number,
-        )
-    pattern_id = pattern_id_match.group(1)
-    sample_page_path = _LAYOUTS_DIR / pattern_id / "sample.jpg"
-    if not sample_page_path.exists():
-        return _error(
-            f"layout sample image missing for pattern_id={pattern_id}: "
-            f"{sample_page_path}",
-            page_number=page_number,
-        )
-
-    images: list[tuple[str, bytes, str]] = [
-        ("sample.jpg", sample_page_path.read_bytes(), "image/jpeg"),
-        ("sanae.jpg", _CHARACTER_REF_PATH.read_bytes(), "image/jpeg"),
-    ]
-    image_labels: list[str] = ["【ページ例】", "【参考資料: 高市早苗】"]
-
-    asset_keys = sorted(
-        key for key in await tool_context.list_artifacts() if key.startswith("assets/")
+    preflight = await load_brief_and_layout_sample(
+        tool_context,
+        step=_STEP,
+        target_date=target_date,
+        page_number=page_number,
     )
-    for key in asset_keys:
-        asset_part = await tool_context.load_artifact(key)
-        if (
-            asset_part is None
-            or asset_part.inline_data is None
-            or not asset_part.inline_data.data
-        ):
-            continue
-        mime = (asset_part.inline_data.mime_type or "image/jpeg").lower()
+    if isinstance(preflight, dict):
+        return preflight
+    brief_text, sample_page_path = preflight
+
+    attached: list[_AttachedImage] = [
+        _AttachedImage(
+            "sample.jpg", sample_page_path.read_bytes(), "image/jpeg", "【ページ例】"
+        ),
+        _AttachedImage(
+            "sanae.jpg",
+            paths.CHARACTER_REF_PATH.read_bytes(),
+            "image/jpeg",
+            "【参考資料: 高市早苗】",
+        ),
+    ]
+
+    for asset in await load_asset_parts(tool_context):
+        mime = asset.mime.lower()
         # OpenAI Images Edit が受け付けるのは png/jpeg/webp のみ。
         if mime not in {"image/png", "image/jpeg", "image/webp"}:
             continue
-        filename = key.removeprefix("assets/") or "asset"
-        asset_name = filename.rsplit(".", 1)[0] if "." in filename else filename
-        images.append((filename, asset_part.inline_data.data, mime))
-        image_labels.append(f"【参考資料: {asset_name}】")
+        attached.append(
+            _AttachedImage(
+                asset.basename,
+                asset.data,
+                mime,
+                f"【参考資料: {asset.asset_name}】",
+            )
+        )
 
-    order_lines = "\n".join(f"{i + 1}. {label}" for i, label in enumerate(image_labels))
+    order_lines = "\n".join(f"{i + 1}. {item.label}" for i, item in enumerate(attached))
     prompt = (
         f"{_PROMPT_INTRO}{brief_text}\n```"
         f"{_IMAGE_ORDER_TEMPLATE.format(lines=order_lines)}"
         f"\n\n---\n\n{_FINAL_REMINDER}"
     )
 
-    model_name = os.getenv("OPENAI_IMAGE_MODEL", _DEFAULT_IMAGE_MODEL)
+    model_name = get_settings().openai_image_model
     try:
         client = AsyncOpenAI()
         response = await client.images.edit(
             model=model_name,
-            image=list(images),
+            image=[(item.filename, item.data, item.mime) for item in attached],
             prompt=prompt,
             size=_IMAGE_SIZE,
             quality=_IMAGE_QUALITY,
@@ -262,45 +248,39 @@ async def generate_page_gpt(
             n=1,
         )
     except Exception as error:
-        return _error(f"openai call failed: {error}", page_number=page_number)
+        return build_error_result(
+            tool_context,
+            _STEP,
+            f"openai call failed: {error}",
+            page_number=page_number,
+        )
 
     data_items = getattr(response, "data", None) or []
     if not data_items or not getattr(data_items[0], "b64_json", None):
-        return _error("no image data in response", page_number=page_number)
+        return build_error_result(
+            tool_context,
+            _STEP,
+            "no image data in response",
+            page_number=page_number,
+        )
 
     try:
         image_bytes = base64.b64decode(data_items[0].b64_json)
     except (ValueError, TypeError) as error:
-        return _error(f"failed to decode image: {error}", page_number=page_number)
+        return build_error_result(
+            tool_context,
+            _STEP,
+            f"failed to decode image: {error}",
+            page_number=page_number,
+        )
 
-    artifact_name = f"pages/{_MODEL_LABEL}_{page_number}{_OUTPUT_EXT}"
-    version = await tool_context.save_artifact(
-        artifact_name,
-        types.Part(inline_data=types.Blob(data=image_bytes, mime_type=_OUTPUT_MIME)),
+    return await save_page_artifact(
+        tool_context,
+        step=_STEP,
+        model_label=_MODEL_LABEL,
+        page_number=page_number,
+        target_date=target_date,
+        image_bytes=image_bytes,
+        mime=_OUTPUT_MIME,
+        extension=_OUTPUT_EXT,
     )
-
-    tool_context.state.update(
-        {
-            "target_date": target_date,
-            f"page_{_MODEL_LABEL}_{page_number}_artifact": artifact_name,
-            f"page_{_MODEL_LABEL}_{page_number}_version": version,
-            "last_error": None,
-        }
-    )
-
-    return {
-        "status": "success",
-        "step": _STEP,
-        "page_number": page_number,
-        "artifact": artifact_name,
-        "version": version,
-        "bytes": len(image_bytes),
-        "mime_type": _OUTPUT_MIME,
-    }
-
-
-def _error(message: str, *, page_number: int | None = None) -> dict[str, Any]:
-    payload: dict[str, Any] = {"status": "error", "step": _STEP, "message": message}
-    if page_number is not None:
-        payload["page_number"] = page_number
-    return payload
