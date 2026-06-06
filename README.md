@@ -10,7 +10,7 @@ A daily pipeline that turns the Japanese Prime Minister's published schedule (`�
 
 ## Overview
 
-`manga_dosei` is an ADK workflow that summarizes the Prime Minister's agenda for a given date as a one-page manga. Every run is keyed by `target_date` (`YYYYMMDD`); each step writes an artifact under that session, and the next step consumes those artifacts. The intermediate files are deliberately exposed (not in-memory) so any step can be re-run independently from `adk web`.
+`manga_dosei` is an ADK workflow that summarizes the Prime Minister's agenda for a given date as a one-page manga. Every run is keyed by `target_date` (`YYYYMMDD`); each step writes an artifact under that session, and the next step consumes those artifacts. The intermediate files are kept on disk (not in-memory) so any step can be re-run independently from `adk web`.
 
 ## Pipeline
 
@@ -53,35 +53,18 @@ flowchart TD
     GP ==> OUT[/"pages/gemini_1..5"/]
 ```
 
-Non-LLM helpers omitted from the diagram for readability — each `LlmAgent` actually drives the following tools:
+Each step is one ADK tool, and each produces a stable artifact name that downstream steps depend on. The narrative content, the page structure, and the final image-gen brief are intentionally separate files so you can edit one without rebuilding the rest. The non-LLM helpers omitted from the diagram for readability (Tavily / httpx / Wikimedia API, etc.) are listed in the "Tools" column.
 
-- `fetch_dosei`
-  - `search_jiji_for_dosei` — Tavily REST, JIJI.COM only
-  - `fetch_url` — httpx
-- `section_researcher` / `enhanced_search_executor`
-  - `search_news_jiji` — Tavily REST, JIJI.COM only
-  - `search_news_yahoo` — Tavily REST, Yahoo! News only
-  - `summarize_url` — wrapped child `LlmAgent` (shown in the diagram)
-    - `fetch_url` — httpx, run inside its own `InMemorySessionService` so raw HTML stays out of the parent context
-- `collect_assets`
-  - `wiki_image_search` — Wikimedia Commons API
-  - `wiki_image_info` — Wikimedia Commons API
-  - `download_image` — httpx
-- Between `collect_assets` and `define_layout`
-  - `resize_assets` — `FunctionTool` (Pillow LANCZOS), produces new artifact versions only when a reference image's long side exceeds 1024 px
-
-Each step is one ADK tool, and each produces a stable artifact name that downstream steps depend on. The narrative content, the page structure, and the final image-gen brief are intentionally separate files so you can edit one without rebuilding the rest.
-
-| # | Step | Produces | What it does |
-|---|---|---|---|
-| 1 | `fetch_dosei` | `dosei.md` | Agent-driven tool loop: the `LlmAgent` calls `search_jiji_for_dosei` (Tavily) to find the article URL, then `fetch_url` (httpx) to pull the page HTML, then transcribes the day's `首相動静` verbatim (including the trailing 配信日時 line). No summarization. |
-| 2 | `enrich_news` | `news.md` | `SequentialAgent` orchestrating 3 stages: **section_researcher** (gather initial findings) → **LoopAgent** (max 2 iterations: **research_evaluator** grades pass/fail and emits follow-up queries → **EscalationChecker** (custom `BaseAgent`) exits the loop when grade=="pass" → **enhanced_search_executor** runs the follow-ups and re-emits findings) → **news_composer** (merges findings + `dosei.md` into the final markdown). Both researchers share the same three tools: `search_news_jiji`, `search_news_yahoo`, and `summarize_url` — itself an `AgentTool` wrapping a child `LlmAgent` that calls `fetch_url` in an isolated session so raw HTML never reaches the parent context. Output covers 漫画ネタ候補 (A=インパクト / B=政策決定 / C=人物エピソード), per-person profiles, meeting context, and surrounding political background — all with sources. |
-| 3 | `generate_scenario` | `scenario.md` | Single `LlmAgent` that drafts the actual manga script from `news.md`: page title, 4–5 panel titles, per-panel 状況 / イラスト / dialogue (verbatim, numbered), 登場人物一覧, and X-post text. **Sole authority for narrative content** — downstream steps only restructure or render what's here. |
-| 4 | `collect_assets` | `assets/<name>.<ext>` + `manifests/assets.json` | Agent-driven tool loop: the `LlmAgent` reads `scenario.md`'s cast list, then iterates `wiki_image_search` (find Wikimedia candidates) → `wiki_image_info` (license + dimensions) → `download_image` (fetch + save) until it has ≤7 references, people first. The manifest records source URL, license, and MIME type per image. |
-| 5 | `resize_assets` | `assets/<name>.<ext>` (new versions) | Downsizes any reference image whose long side exceeds 1024 px using Pillow + LANCZOS. Original versions are kept on the artifact store. |
-| 6 | `define_layout` | `layout.md` | Picks a `pattern_id` from the layout catalog (`assets/layouts/{3a,4a,4b,4c,4d,5a}/`) based on panel count and pacing, then transcribes the canonical ASCII figure and per-row layout verbatim and adds per-panel character placement (画面左 / 画面右) derived from speaker order. Layout-only — no titles, dialogue, or visuals. |
-| 7 | `compose_image_brief` | `image_brief.md` | Merges `scenario.md` + `layout.md` + `news.md` + `manifests/assets.json` into a single self-contained brief for the image generator: page header (verbatim), 登場人物プロフィール (with 参照画像あり/なし flag), the layout's ASCII figure, and per-panel specs (position + character placement + situation/illustration hints + verbatim balloons). Fields tagged `(verbatim)` are the only things meant to render as on-page text. |
-| 8 | `generate_page_gemini` (×5) | `pages/gemini_<N>.<jpg\|png>` | Feeds `image_brief.md` to Gemini Image along with three kinds of reference: the layout sample (`assets/layouts/<pattern_id>/sample.jpg`), the Takaichi Sanae character reference (`assets/samples/sanae.jpg`), and the resized `assets/*` images. No internal retry — variant count comes from `PAGE_VARIANT_COUNT`. The best variant is picked manually. |
+| # | Step | Produces | Tools | What it does |
+|---|---|---|---|---|
+| 1 | `fetch_dosei` | `dosei.md` | `search_jiji_for_dosei` (Tavily / jiji.com only), `fetch_url` (httpx) | Finds the article URL, fetches the page HTML, and transcribes the day's `首相動静` verbatim (including the trailing 配信日時 line). No summarization. |
+| 2 | `enrich_news` | `news.md` | `search_news_jiji` / `search_news_yahoo` (Tavily), `summarize_url` | `SequentialAgent` orchestrating 3 stages: **section_researcher** (gather initial findings) → **LoopAgent** (max 2 iterations: **research_evaluator** grades pass/fail, and on fail **enhanced_search_executor** runs the follow-ups) → **news_composer** (merges findings + `dosei.md` into the final markdown). Output covers manga story candidates, per-person profiles, meeting context, and surrounding political background — all with sources. `summarize_url` summarizes page bodies inside a child `LlmAgent` so raw HTML never reaches the parent context. |
+| 3 | `generate_scenario` | `scenario.md` | — | Drafts the actual manga script from `news.md`: page title, panel titles, per-panel 状況 / イラスト / dialogue (verbatim, numbered), 登場人物一覧, and X-post text. **Sole authority for narrative content** — downstream steps only restructure or render what's here. |
+| 4 | `collect_assets` | `assets/<name>.<ext>` + `manifests/assets.json` | `wiki_image_search` / `wiki_image_info` (Wikimedia), `download_image` (httpx) | Reads `scenario.md`'s cast list and collects ≤7 references (people first). The manifest records source URL, license, and MIME type per image. |
+| 5 | `resize_assets` | `assets/<name>.<ext>` (new versions) | Pillow (LANCZOS) | Downsizes only reference images whose long side exceeds 1024 px, writing them back as new versions. Original versions are kept on the artifact store. |
+| 6 | `define_layout` | `layout.md` | — | Picks a `pattern_id` from the layout catalog (`assets/layouts/{3a,4a,4b,4c,4d,5a}/`) based on panel count and pacing, then transcribes the ASCII figure and per-row layout verbatim and adds per-panel character placement (画面左 / 画面右) derived from speaker order. Layout-only — no titles, dialogue, or visuals. |
+| 7 | `compose_image_brief` | `image_brief.md` | — | Merges `scenario.md` + `layout.md` + `news.md` + `manifests/assets.json` into a single self-contained brief for the image generator: page header (verbatim), 登場人物プロフィール (with 参照画像あり/なし flag), the layout's ASCII figure, and per-panel specs (position + character placement + situation/illustration hints + verbatim balloons). Fields tagged `(verbatim)` are the only things meant to render as on-page text. |
+| 8 | `generate_page_gemini` (×5) | `pages/gemini_<N>.<jpg\|png>` | Gemini Image | Feeds `image_brief.md` plus three kinds of reference (the layout sample for the chosen `pattern_id`, the Takaichi Sanae character reference `assets/samples/sanae.jpg`, and the resized `assets/*` images). No internal retry — called `PAGE_VARIANT_COUNT` times; the best variant is picked manually. |
 
 The daily CLI currently uses only the Gemini Image backend. `generate_page_gpt` (OpenAI GPT Image, `PAGE_VARIANT_COUNT=2`) is still registered on the ADK agent and reachable from `adk web`, but is not invoked by `uv run manga_dosei` — Gemini gives more reliable composition and on-page text rendering.
 
@@ -93,11 +76,11 @@ The daily CLI currently uses only the Gemini Image backend. `generate_page_gpt` 
 - **LLM (text)**: Gemini (`gemini-3.1-pro-preview` by default)
 - **LLM (image)**: Gemini Image (`gemini-3-pro-image-preview` by default; OpenAI GPT Image `gpt-image-2` is available through the ADK agent but is not invoked by the daily CLI)
 - **Web search**: [Tavily REST API](https://docs.tavily.com/) (parameters fixed in code via `make_tavily_search_tool`; the LLM only chooses `query`)
-- **Data sources**: JIJI.COM (www.jiji.com), Yahoo! News (news.yahoo.co.jp), Wikimedia Commons
+- **Data sources**: jiji.com, Yahoo! News (news.yahoo.co.jp), Wikimedia Commons
 
 ## Requirements
 
-API keys for Gemini, OpenAI, and Tavily (see `.env.example`).
+Gemini and Tavily API keys plus a Wikimedia contact email are required for the daily CLI. `OPENAI_API_KEY` is only needed if you also invoke `generate_page_gpt` via `adk web` (see `.env.example`).
 
 ## Setup
 
@@ -114,11 +97,21 @@ Run the full pipeline for a given date (`YYYYMMDD`):
 uv run manga_dosei 20260410
 ```
 
-Outputs (sessions and artifacts) are written under `.adk/`.
+Outputs (sessions and artifacts) are written to `.adk/` anchored to the parent of the `manga_dosei` package directory, not your CWD, so running `manga_dosei` from a subdirectory still writes to the same place. With the default editable `uv sync` install, that resolves to `<repo>/.adk/`.
+
+### Re-running with a distinct session id
+
+By default the session id equals `target_date`, so re-running the same date overwrites / mixes with the previous run's session and artifacts under `.adk/`. Pass `--session-id` to keep a second run isolated:
+
+```bash
+uv run manga_dosei 20260410 --session-id 20260410_retry1
+```
+
+The value must match `^\d{8}(_[A-Za-z0-9_-]+)?$` and its first 8 chars must equal `target_date` (the session id is also used as the artifact storage subdirectory name, so the suffix is restricted to filesystem-safe characters).
 
 ### Dumping artifacts for archiving
 
-Pass `--publish-dir PATH` to also write the latest version of every artifact into a flat directory (slash hierarchy preserved):
+Pass `--publish-dir PATH` to also write the latest version of every artifact under `PATH`, preserving the artifact-name slash hierarchy (e.g. `pages/gemini_1.jpg` → `PATH/pages/gemini_1.jpg`):
 
 ```bash
 uv run manga_dosei 20260410 --publish-dir /tmp/manga-out
@@ -137,7 +130,10 @@ uv run manga_dosei-publish \
   --message "publish: 20260410"
 ```
 
-The token is read only from `GITHUB_OUTPUT_TOKEN`; it is never accepted as a CLI flag.
+- Files and directories under `--source` whose name starts with `.` are skipped, and symlinks are not followed (so `.env`, `.git/`, `.adk/`, editor swap files, etc. are excluded). Logs intended to ride the same commit (e.g. redirected stdout/stderr) must therefore not start with `.`.
+- `--dest` must be a clean relative POSIX path (see `manga_dosei-publish --help` for the exact rules); an empty / `/` value pushes to the repo root.
+
+The token is read only from `GITHUB_OUTPUT_TOKEN` in the process env; it is never accepted as a CLI flag, and `manga_dosei-publish` deliberately ignores any `.env` on disk so a stray `.env` under `--source` / the CI working directory cannot inject the token. The pipeline (`uv run manga_dosei`) does load `.env` from CWD as usual — only the publisher opts out.
 
 ### Interactive session
 
@@ -150,4 +146,12 @@ uv run adk web \
   .
 ```
 
-Run this from the repository root so `$(pwd)` resolves to the same directory the CLI writes into. Absolute paths are required: `file://./...` is parsed with `.` as a host name and rejected ("file:// artifact URIs must reference the local filesystem").
+Invoke `adk web` from the same directory the CLI writes its `.adk/` to (as noted above, usually `<repo-root>/.adk/`) so that `$(pwd)/.adk/...` resolves to the same path. Absolute paths are required: `file://./...` is parsed with `.` as a host name and rejected ("file:// artifact URIs must reference the local filesystem.").
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+Pure unit-level checks under `tests/` — no LLM, network, or `.adk/` storage.

@@ -94,7 +94,10 @@ def main() -> None:
     _validate_session_id(session_id, target_date)
     # NOTE: `manga_dosei/__init__.py` already loads `<repo>/.env`, but a per-run
     # CWD `.env` (CI rotation, debug overrides) needs a second pass. Both calls
-    # use override=False so the priority stays shell > CWD `.env` > repo `.env`.
+    # use override=False, so the effective priority is
+    # shell > repo `.env` > CWD `.env` — repo `.env` is loaded first at import
+    # time and wins over CWD `.env` for keys present in both but absent from the
+    # shell. CWD `.env` still picks up keys the repo `.env` does not define.
     # Invalidate get_settings's lru_cache so values land in Settings.
     load_dotenv(override=False)
     get_settings.cache_clear()
