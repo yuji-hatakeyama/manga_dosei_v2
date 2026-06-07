@@ -73,7 +73,7 @@ flowchart TD
 - **言語**: Python 3.12
 - **ツール / ライブラリ**: uv, httpx, BeautifulSoup, Pillow ほか
 - **フレームワーク**: [Google ADK](https://github.com/google/adk-python)
-- **LLM (text)**: Gemini (デフォルト `gemini-3.1-pro-preview`)
+- **LLM (text)**: Gemini (デフォルト `gemini-3.5-flash`)
 - **LLM (image)**: Gemini Image (デフォルト `gemini-3-pro-image-preview`)。OpenAI GPT Image (`gpt-image-2`) はエージェント経由で利用可能ですが日次 CLI からは呼びません
 - **Web 検索**: [Tavily REST API](https://docs.tavily.com/) を `make_tavily_search_tool` でコード側パラメータ固定にして利用 (LLM は `query` のみ決める)
 - **データソース**: jiji.com、Yahoo!ニュース (news.yahoo.co.jp)、Wikimedia Commons

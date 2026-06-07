@@ -27,7 +27,7 @@ def _clear_settings_cache():
 def test_settings_uses_defaults_when_env_unset(isolate_env) -> None:
     settings = Settings()
 
-    assert settings.gemini_text_model == "gemini-3.1-pro-preview"
+    assert settings.gemini_text_model == "gemini-3.5-flash"
     assert settings.gemini_image_model == "gemini-3-pro-image-preview"
     assert settings.openai_image_model == "gpt-image-2"
 

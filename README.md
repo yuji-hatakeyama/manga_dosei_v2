@@ -73,7 +73,7 @@ The daily CLI currently uses only the Gemini Image backend. `generate_page_gpt` 
 - **Language**: Python 3.12
 - **Tooling**: uv, httpx, BeautifulSoup, Pillow, …
 - **Framework**: [Google ADK](https://github.com/google/adk-python)
-- **LLM (text)**: Gemini (`gemini-3.1-pro-preview` by default)
+- **LLM (text)**: Gemini (`gemini-3.5-flash` by default)
 - **LLM (image)**: Gemini Image (`gemini-3-pro-image-preview` by default; OpenAI GPT Image `gpt-image-2` is available through the ADK agent but is not invoked by the daily CLI)
 - **Web search**: [Tavily REST API](https://docs.tavily.com/) (parameters fixed in code via `make_tavily_search_tool`; the LLM only chooses `query`)
 - **Data sources**: jiji.com, Yahoo! News (news.yahoo.co.jp), Wikimedia Commons

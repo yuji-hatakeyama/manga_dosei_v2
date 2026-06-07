@@ -37,9 +37,7 @@ class Settings(BaseSettings):
     # chains print `**********` instead of the live value. Call sites that
     # need the raw string use `.get_secret_value()`.
     gemini_api_key: SecretStr | None = Field(default=None, alias="GEMINI_API_KEY")
-    gemini_text_model: str = Field(
-        default="gemini-3.1-pro-preview", alias="GEMINI_TEXT_MODEL"
-    )
+    gemini_text_model: str = Field(default="gemini-3.5-flash", alias="GEMINI_TEXT_MODEL")
     gemini_image_model: str = Field(
         default="gemini-3-pro-image-preview", alias="GEMINI_IMAGE_MODEL"
     )

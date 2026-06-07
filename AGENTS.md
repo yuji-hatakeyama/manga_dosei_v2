@@ -67,7 +67,7 @@ Tests live under `tests/` and run with `uv run pytest` (pytest + pytest-asyncio 
 `.env` (loaded automatically by `manga_dosei/__init__.py` via `python-dotenv`). **Env-var names, defaults, and types are defined in `manga_dosei/config.py` — that module is the intended single source of truth.** Call `get_settings()` (cached) in new code instead of re-reading `os.environ` directly. All current tool/agent modules (`fetch_dosei`, `enrich_news`, `define_layout`, `generate_scenario`, `compose_image_brief`, `generate_page_gemini`, `generate_page_gpt`, `collect_assets`, `_tavily`, `_wikipedia`, and `agent.py`) route through `get_settings()`.
 
 - `GEMINI_API_KEY` — Gemini text + image generation
-- `GEMINI_TEXT_MODEL` (default `gemini-3.1-pro-preview`) — text model used by all `LlmAgent`s
+- `GEMINI_TEXT_MODEL` (default `gemini-3.5-flash`) — text model used by all `LlmAgent`s
 - `GEMINI_IMAGE_MODEL` (default `gemini-3-pro-image-preview`) — used by `generate_page_gemini` (`response_modalities=["IMAGE","TEXT"]`, `image_size="2K"`)
 - `OPENAI_API_KEY` — OpenAI **Images Edit** API (`client.images.edit`), used by `generate_page_gpt`. Edit endpoint (not Generate) because it takes multiple reference images (layout sample + character refs) as inline input.
 - `OPENAI_IMAGE_MODEL` (default `gpt-image-2`) — used by `generate_page_gpt` at `1024x1536` / `quality=high` / `output_format=png`
