@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.21.0",
     "beautifulsoup4>=4.14.3",
-    "google-adk>=1.22.0",
+    "google-adk[db]>=1.22.0",
     "google-genai>=1.0.0",
     "greenlet>=3.3.0",
     "openai>=1.60.0",
